@@ -42,8 +42,10 @@ template <typename DataT>
 void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                 std::shared_ptr<deviceAllocator> allocator, cudaStream_t stream,
                 DataT scale = (DataT)1.0, DataT noise_scale = (DataT)0.1,
-                DataT diff_scale = (DataT)0.3, uint64_t seed = 0ULL,
-                GeneratorType type = GenPhilox) {
+                DataT diff_scale = (DataT)0.3, DataT* d_mu = nullptr,
+                DataT* d_ar = nullptr, DataT* d_ma = nullptr,
+                DataT* d_sar = nullptr, DataT* d_sma = nullptr,
+                uint64_t seed = 0ULL, GeneratorType type = GenPhilox) {
   int d_sD = order.d + order.s * order.D;
   int p_sP = order.p + order.s * order.P;
   int q_sQ = order.q + order.s * order.Q;
@@ -63,35 +65,45 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   device_buffer<DataT> sar(allocator, stream);
   device_buffer<DataT> sma(allocator, stream);
   if (order.k) {
-    mu.resize(batch_size, stream);
-    gpu_gen.uniform(mu.data(), batch_size, -intercept_scale, intercept_scale,
+    if (d_mu == nullptr) {
+      mu.resize(batch_size, stream);
+      d_mu = mu.data();
+    }
+    gpu_gen.uniform(d_mu, batch_size, -intercept_scale, intercept_scale,
                     stream);
   }
   if (order.p) {
-    ar.resize(batch_size * order.p, stream);
-    gpu_gen.uniform(ar.data(), batch_size * order.p, (DataT)-1.0, (DataT)1.0,
+    if (d_ar == nullptr) {
+      ar.resize(batch_size * order.p, stream);
+      d_ar = ar.data();
+    }
+    gpu_gen.uniform(d_ar, batch_size * order.p, (DataT)-1.0, (DataT)1.0,
                     stream);
   }
   if (order.q) {
-    ma.resize(batch_size * order.q, stream);
-    gpu_gen.uniform(ma.data(), batch_size * order.q, (DataT)-1.0, (DataT)1.0,
+    if (d_ma == nullptr) {
+      ma.resize(batch_size * order.q, stream);
+      d_ma = ma.data();
+    }
+    gpu_gen.uniform(d_ma, batch_size * order.q, (DataT)-1.0, (DataT)1.0,
                     stream);
   }
   if (order.P) {
-    sar.resize(batch_size * order.P, stream);
-    gpu_gen.uniform(sar.data(), batch_size * order.P, (DataT)-1.0, (DataT)1.0,
+    if (d_sar == nullptr) {
+      sar.resize(batch_size * order.P, stream);
+      d_sar = sar.data();
+    }
+    gpu_gen.uniform(d_sar, batch_size * order.P, (DataT)-1.0, (DataT)1.0,
                     stream);
   }
   if (order.Q) {
-    sma.resize(batch_size * order.Q, stream);
-    gpu_gen.uniform(sma.data(), batch_size * order.Q, (DataT)-1.0, (DataT)1.0,
+    if (d_sma == nullptr) {
+      sma.resize(batch_size * order.Q, stream);
+      d_sma = sma.data();
+    }
+    gpu_gen.uniform(d_sma, batch_size * order.Q, (DataT)-1.0, (DataT)1.0,
                     stream);
   }
-  DataT* d_mu = mu.data();
-  DataT* d_ar = ar.data();
-  DataT* d_ma = ma.data();
-  DataT* d_sar = sar.data();
-  DataT* d_sma = sma.data();
 
   // Create coefficient vectors for the AR+SAR and MA+SMA components
   device_buffer<DataT> ar_vec(allocator, stream);
@@ -131,14 +143,13 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   }
 
   // Create buffer for differenced series
-  /// TODO: avoid that if no intercept nor differencing!
   DataT* d_diff;
   device_buffer<DataT> diff_data(allocator, stream);
-  if(d_sD) {
+  if (d_sD) {
     diff_data.resize(batch_size * (n_obs - d_sD), stream);
     d_diff = diff_data.data();
   } else {
-      d_diff = out;
+    d_diff = out;
   }
 
   // Generate first value of the differenced series
@@ -195,7 +206,7 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                                   order.s, stream, order.k, d_mu);
   }
 
-  if(d_sD) {
+  if (d_sD) {
     // Copy to output
     DataT* d_starting_values = starting_values.data();
     thrust::for_each(thrust::cuda::par.on(stream), counting,

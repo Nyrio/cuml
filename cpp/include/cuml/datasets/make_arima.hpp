@@ -27,12 +27,17 @@ namespace Datasets {
  */
 void make_arima(const cumlHandle& handle, float* out, int batch_size, int n_obs,
                 ARIMAOrder order, float scale = 1.0f, float noise_scale = 0.1f,
-                float diff_scale = 0.3f, uint64_t seed = 0ULL);
+                float diff_scale = 0.3f, float* d_mu = nullptr,
+                float* d_ar = nullptr, float* d_ma = nullptr,
+                float* d_sar = nullptr, float* d_sma = nullptr,
+                uint64_t seed = 0ULL);
 
 void make_arima(const cumlHandle& handle, double* out, int batch_size,
                 int n_obs, ARIMAOrder order, double scale = 1.0,
                 double noise_scale = 0.1, double diff_scale = 0.3,
-                uint64_t seed = 0ULL);
+                double* d_mu = nullptr, double* d_ar = nullptr,
+                double* d_ma = nullptr, double* d_sar = nullptr,
+                double* d_sma = nullptr, uint64_t seed = 0ULL);
 
 }  // namespace Datasets
 }  // namespace ML

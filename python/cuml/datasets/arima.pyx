@@ -50,6 +50,11 @@ cdef extern from "cuml/datasets/make_arima.hpp" namespace "ML":
         float scale,
         float noise_scale,
         float diff_scale,
+        float* d_mu,
+        float* d_ar,
+        float* d_ma,
+        float* d_sar,
+        float* d_sma,
         uint64_t seed
     )
 
@@ -62,6 +67,11 @@ cdef extern from "cuml/datasets/make_arima.hpp" namespace "ML":
         double scale,
         double noise_scale,
         double diff_scale,
+        double* d_mu,
+        double* d_ar,
+        double* d_ma,
+        double* d_sar,
+        double* d_sma,
         uint64_t seed
     )
 
@@ -101,20 +111,56 @@ def make_arima(batch_size=1000, n_obs=100, order=(1, 1, 1),
     if random_state is None:
         random_state = randint(0, 1e18)
 
+    # Create mu, ar and ma arrays
+    cdef uintptr_t d_mu_ptr = <uintptr_t> NULL
+    cdef uintptr_t d_ar_ptr = <uintptr_t> NULL
+    cdef uintptr_t d_ma_ptr = <uintptr_t> NULL
+    cdef uintptr_t d_sar_ptr = <uintptr_t> NULL
+    cdef uintptr_t d_sma_ptr = <uintptr_t> NULL
+    if coef and cpp_order.k:
+        d_mu = zeros(batch_size, dtype=dtype)
+        d_mu_ptr = get_dev_array_ptr(d_mu)
+    if coef and cpp_order.p:
+        d_ar = zeros((cpp_order.p, batch_size), dtype=dtype, order='F')
+        d_ar_ptr = get_dev_array_ptr(d_ar)
+    if coef and cpp_order.q:
+        d_ma = zeros((cpp_order.q, batch_size), dtype=dtype, order='F')
+        d_ma_ptr = get_dev_array_ptr(d_ma)
+    if coef and cpp_order.P:
+        d_sar = zeros((cpp_order.P, batch_size), dtype=dtype, order='F')
+        d_sar_ptr = get_dev_array_ptr(d_sar)
+    if coef and cpp_order.Q:
+        d_sma = zeros((cpp_order.Q, batch_size), dtype=dtype, order='F')
+        d_sma_ptr = get_dev_array_ptr(d_sma)
+
     if dtype == np.float32:
-        cpp_make_arima(handle_[0], <double*> out_ptr, <int> batch_size,
+        cpp_make_arima(handle_[0], <float*> out_ptr, <int> batch_size,
                        <int> n_obs, cpp_order, <float> scale,
                        <float> noise_scale, <float> diff_scale,
-                       <uint64_t> random_state)
+                       <float*> d_mu_ptr, <float*> d_ar_ptr,
+                       <float*> d_ma_ptr, <float*> d_sar_ptr,
+                       <float*> d_sma_ptr, <uint64_t> random_state)
 
     else:
         cpp_make_arima(handle_[0], <double*> out_ptr, <int> batch_size,
                        <int> n_obs, cpp_order, <double> scale,
                        <double> noise_scale, <double> diff_scale,
-                       <uint64_t> random_state)
+                       <double*> d_mu_ptr, <double*> d_ar_ptr,
+                       <double*> d_ma_ptr, <double*> d_sar_ptr,
+                       <double*> d_sma_ptr, <uint64_t> random_state)
 
     if coef:
-        # TODO: return params
-        return out, None
+        params = dict()
+        if cpp_order.k:
+            params["mu"] = d_mu.copy_to_host()
+        if cpp_order.p:
+            params["ar"] = d_ar.copy_to_host()
+        if cpp_order.q:
+            params["ma"] = d_ma.copy_to_host()
+        if cpp_order.P:
+            params["sar"] = d_sar.copy_to_host()
+        if cpp_order.Q:
+            params["sma"] = d_sma.copy_to_host()
+        return out, params
     else:
         return out
