@@ -363,6 +363,7 @@ if(BUILD_CUML_CPP_LIBRARY)
     src/common/cuML_comms_impl.cpp
     src/comms/cuML_comms_test.cpp
     src/common/nvtx.cu
+    src/datasets/make_arima.cu
     src/datasets/make_blobs.cu
     src/datasets/make_regression.cu
     src/dbscan/dbscan.cu
