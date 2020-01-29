@@ -51,14 +51,22 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   int q_sQ = order.q + order.s * order.Q;
   auto counting = thrust::make_counting_iterator(0);
 
+  // Adapt the scale of the intercept to either the scale of the difference
+  // or the scale of the series
   DataT intercept_scale = d_sD ? diff_scale : scale;
 
-  // Create random generators and distributions
+  // Create CPU/GPU random generators and distributions
   std::default_random_engine cpu_gen(seed);
   Rng gpu_gen(seed, type);
   std::uniform_real_distribution<DataT> udis((DataT)0.0, (DataT)1.0);
 
-  // Generate parameters
+  // Generate parameters. We draw temporary random parameters and transform
+  // them to create the final parameters. These parameters will be written
+  // either in a buffer or an array provided by the user
+  device_buffer<DataT> ar_temp(allocator, stream);
+  device_buffer<DataT> ma_temp(allocator, stream);
+  device_buffer<DataT> sar_temp(allocator, stream);
+  device_buffer<DataT> sma_temp(allocator, stream);
   device_buffer<DataT> mu(allocator, stream);
   device_buffer<DataT> ar(allocator, stream);
   device_buffer<DataT> ma(allocator, stream);
@@ -77,35 +85,42 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
       ar.resize(batch_size * order.p, stream);
       d_ar = ar.data();
     }
-    gpu_gen.uniform(d_ar, batch_size * order.p, (DataT)-1.0, (DataT)1.0,
-                    stream);
+    ar_temp.resize(batch_size * order.p, stream);
+    gpu_gen.uniform(ar_temp.data(), batch_size * order.p, (DataT)-1.0,
+                    (DataT)1.0, stream);
   }
   if (order.q) {
     if (d_ma == nullptr) {
       ma.resize(batch_size * order.q, stream);
       d_ma = ma.data();
     }
-    gpu_gen.uniform(d_ma, batch_size * order.q, (DataT)-1.0, (DataT)1.0,
-                    stream);
+    ma_temp.resize(batch_size * order.q, stream);
+    gpu_gen.uniform(ma_temp.data(), batch_size * order.q, (DataT)-1.0,
+                    (DataT)1.0, stream);
   }
   if (order.P) {
     if (d_sar == nullptr) {
       sar.resize(batch_size * order.P, stream);
       d_sar = sar.data();
     }
-    gpu_gen.uniform(d_sar, batch_size * order.P, (DataT)-1.0, (DataT)1.0,
-                    stream);
+    sar_temp.resize(batch_size * order.P, stream);
+    gpu_gen.uniform(sar_temp.data(), batch_size * order.P, (DataT)-1.0,
+                    (DataT)1.0, stream);
   }
   if (order.Q) {
     if (d_sma == nullptr) {
       sma.resize(batch_size * order.Q, stream);
       d_sma = sma.data();
     }
-    gpu_gen.uniform(d_sma, batch_size * order.Q, (DataT)-1.0, (DataT)1.0,
-                    stream);
+    sma_temp.resize(batch_size * order.Q, stream);
+    gpu_gen.uniform(sma_temp.data(), batch_size * order.Q, (DataT)-1.0,
+                    (DataT)1.0, stream);
   }
+  TimeSeries::batched_jones_transform(
+    order, batch_size, false, ar_temp.data(), ma_temp.data(), sar_temp.data(),
+    sma_temp.data(), d_ar, d_ma, d_sar, d_sma, allocator, stream);
 
-  // Create coefficient vectors for the AR+SAR and MA+SMA components
+  // Create lag coefficient vectors for the AR+SAR and MA+SMA components
   device_buffer<DataT> ar_vec(allocator, stream);
   device_buffer<DataT> ma_vec(allocator, stream);
   ar_vec.resize(batch_size * p_sP, stream);
@@ -142,7 +157,7 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                     mean + scale, stream);
   }
 
-  // Create buffer for differenced series
+  // Create buffer for the differenced series
   DataT* d_diff;
   device_buffer<DataT> diff_data(allocator, stream);
   if (d_sD) {
@@ -217,8 +232,8 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                                   order.s, stream, order.k, d_mu);
   }
 
+  // Copy to output if we didn't write directly to the output vector
   if (d_sD) {
-    // Copy to output
     DataT* d_starting_values = starting_values.data();
     thrust::for_each(thrust::cuda::par.on(stream), counting,
                      counting + batch_size, [=] __device__(int ib) {
