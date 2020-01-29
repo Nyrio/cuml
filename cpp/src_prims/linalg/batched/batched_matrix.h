@@ -934,7 +934,7 @@ BatchedMatrix<T> b_lyapunov(BatchedMatrix<T> A, BatchedMatrix<T> Q) {
   thrust::for_each(thrust::cuda::par.on(A.stream()), counting,
                    counting + batch_size, [=] __device__(int ib) {
                      double* b_I_m_AxA = d_I_m_AxA + ib * n2 * n2;
-                     for (int i = 0; i < n * n; i++) {
+                     for (int i = 0; i < n2; i++) {
                        b_I_m_AxA[(n2 + 1) * i] += 1.0;
                      }
                    });

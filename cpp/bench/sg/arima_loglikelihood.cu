@@ -55,7 +55,7 @@ class ArimaLoglikelihood : public ArimaFixture<D> {
 
     // Generate random parameters
     int N = order.complexity();
-    D* x = (D*)allocator->allocate(N * params.batch_size, stream);
+    D* x = (D*)allocator->allocate(N * params.batch_size * sizeof(D), stream);
     MLCommon::Random::Rng gpu_gen(params.seed, MLCommon::Random::GenPhilox);
     gpu_gen.uniform(x, N * params.batch_size, -1.0, 1.0, stream);
     // Set sigma2 parameters to 1.0
@@ -64,9 +64,10 @@ class ArimaLoglikelihood : public ArimaFixture<D> {
                      [=] __device__(int bid) { x[bid * (N + 1) - 1] = 1.0; });
 
     // Create arrays for log-likelihood and residual
-    D* loglike = (D*)allocator->allocate(params.batch_size, stream);
+    D* loglike = (D*)allocator->allocate(params.batch_size * sizeof(D), stream);
     D* res = (D*)allocator->allocate(
-      params.batch_size * (params.n_obs - order.lost_in_diff()), stream);
+      params.batch_size * (params.n_obs - order.lost_in_diff()) * sizeof(D),
+      stream);
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -80,10 +81,13 @@ class ArimaLoglikelihood : public ArimaFixture<D> {
     }
 
     // Clear memory
-    allocator->deallocate(x, order.complexity() * params.batch_size, stream);
-    allocator->deallocate(loglike, params.batch_size, stream);
+    allocator->deallocate(x, order.complexity() * params.batch_size * sizeof(D),
+                          stream);
+    allocator->deallocate(loglike, params.batch_size * sizeof(D), stream);
     allocator->deallocate(
-      res, params.batch_size * (params.n_obs - order.lost_in_diff()), stream);
+      res,
+      params.batch_size * (params.n_obs - order.lost_in_diff()) * sizeof(D),
+      stream);
   }
 
  private:
