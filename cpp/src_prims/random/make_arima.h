@@ -41,8 +41,8 @@ namespace Random {
 template <typename DataT>
 void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                 std::shared_ptr<deviceAllocator> allocator, cudaStream_t stream,
-                DataT scale = (DataT)1.0, DataT noise_scale = (DataT)0.1,
-                DataT diff_scale = (DataT)0.3, DataT* d_mu = nullptr,
+                DataT scale = (DataT)1.0, DataT noise_scale = (DataT)0.2,
+                DataT intercept_scale = (DataT)1.0, DataT* d_mu = nullptr,
                 DataT* d_ar = nullptr, DataT* d_ma = nullptr,
                 DataT* d_sar = nullptr, DataT* d_sma = nullptr,
                 uint64_t seed = 0ULL, GeneratorType type = GenPhilox) {
@@ -50,10 +50,6 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   int p_sP = order.p + order.s * order.P;
   int q_sQ = order.q + order.s * order.Q;
   auto counting = thrust::make_counting_iterator(0);
-
-  // Adapt the scale of the intercept to either the scale of the difference
-  // or the scale of the series
-  DataT intercept_scale = d_sD ? diff_scale : scale;
 
   // Create CPU/GPU random generators and distributions
   std::default_random_engine cpu_gen(seed);
@@ -167,21 +163,6 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
     d_diff = out;
   }
 
-  // Generate first value of the differenced series
-  {
-    // Generate the values
-    device_buffer<DataT> first_value(allocator, stream);
-    first_value.resize(batch_size, stream);
-    gpu_gen.uniform(first_value.data(), batch_size, -diff_scale, diff_scale,
-                    stream);
-
-    // Copy in the array (TODO: create strided version of random generators?)
-    DataT* d_fv = first_value.data();
-    thrust::for_each(
-      thrust::cuda::par.on(stream), counting, counting + batch_size,
-      [=] __device__(int ib) { d_diff[(n_obs - d_sD) * ib] = d_fv[ib]; });
-  }
-
   // Generate noise/residuals
   device_buffer<DataT> residuals(allocator, stream);
   residuals.resize(batch_size * (n_obs - d_sD), stream);
@@ -196,7 +177,7 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                      const DataT* b_ma_vec = d_ma_vec + ib * q_sQ;
                      const DataT* b_res = d_res + ib * (n_obs - d_sD);
                      DataT* b_diff = d_diff + ib * (n_obs - d_sD);
-                     for (int i = 1; i < n_obs - d_sD; i++) {
+                     for (int i = 0; i < n_obs - d_sD; i++) {
                        // Observation noise
                        DataT yi = b_res[i];
                        // AR component

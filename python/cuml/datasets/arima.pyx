@@ -49,7 +49,7 @@ cdef extern from "cuml/datasets/make_arima.hpp" namespace "ML":
         ARIMAOrder order,
         float scale,
         float noise_scale,
-        float diff_scale,
+        float intercept_scale,
         float* d_mu,
         float* d_ar,
         float* d_ma,
@@ -66,7 +66,7 @@ cdef extern from "cuml/datasets/make_arima.hpp" namespace "ML":
         ARIMAOrder order,
         double scale,
         double noise_scale,
-        double diff_scale,
+        double intercept_scale,
         double* d_mu,
         double* d_ar,
         double* d_ma,
@@ -86,7 +86,7 @@ inp_to_dtype = {
 
 def make_arima(batch_size=1000, n_obs=100, order=(1, 1, 1),
                seasonal_order=(0, 0, 0, 0), fit_intercept=False,
-               scale = 1.0, noise_scale = 0.1, diff_scale = 0.3,
+               scale = 1.0, noise_scale = 0.2, intercept_scale = 1.0,
                coef=False, random_state=None,
                dtype='double', handle=None):
     """TODO: docs
@@ -136,7 +136,7 @@ def make_arima(batch_size=1000, n_obs=100, order=(1, 1, 1),
     if dtype == np.float32:
         cpp_make_arima(handle_[0], <float*> out_ptr, <int> batch_size,
                        <int> n_obs, cpp_order, <float> scale,
-                       <float> noise_scale, <float> diff_scale,
+                       <float> noise_scale, <float> intercept_scale,
                        <float*> d_mu_ptr, <float*> d_ar_ptr,
                        <float*> d_ma_ptr, <float*> d_sar_ptr,
                        <float*> d_sma_ptr, <uint64_t> random_state)
@@ -144,7 +144,7 @@ def make_arima(batch_size=1000, n_obs=100, order=(1, 1, 1),
     else:
         cpp_make_arima(handle_[0], <double*> out_ptr, <int> batch_size,
                        <int> n_obs, cpp_order, <double> scale,
-                       <double> noise_scale, <double> diff_scale,
+                       <double> noise_scale, <double> intercept_scale,
                        <double*> d_mu_ptr, <double*> d_ar_ptr,
                        <double*> d_ma_ptr, <double*> d_sar_ptr,
                        <double*> d_sma_ptr, <uint64_t> random_state)
