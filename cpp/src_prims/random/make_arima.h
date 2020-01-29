@@ -189,30 +189,20 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                  noise_scale, stream);
   const DataT* d_res = residuals.data();
 
-  // Create buffer for the real states
-  device_buffer<DataT> states(allocator, stream);
-  states.resize(batch_size * (n_obs - d_sD), stream);
-  DataT* d_states = states.data();
-  thrust::for_each(thrust::cuda::par.on(stream), counting,
-                   counting + batch_size, [=] __device__(int ib) {
-                     d_states[(n_obs - d_sD) * ib] =
-                       d_diff[(n_obs - d_sD) * ib] - d_res[(n_obs - d_sD) * ib];
-                   });
-
   // Iterate to generate the differenced series
   thrust::for_each(thrust::cuda::par.on(stream), counting,
                    counting + batch_size, [=] __device__(int ib) {
                      const DataT* b_ar_vec = d_ar_vec + ib * p_sP;
                      const DataT* b_ma_vec = d_ma_vec + ib * q_sQ;
                      const DataT* b_res = d_res + ib * (n_obs - d_sD);
-                     DataT* b_states = d_states + ib * (n_obs - d_sD);
                      DataT* b_diff = d_diff + ib * (n_obs - d_sD);
                      for (int i = 1; i < n_obs - d_sD; i++) {
-                       DataT yi = (DataT)0.0;
+                       // Observation noise
+                       DataT yi = b_res[i];
                        // AR component
                        for (int ip = 0; ip < p_sP; ip++) {
                          if (i - 1 - ip >= 0)
-                           yi += b_ar_vec[ip] * b_states[i - 1 - ip];
+                           yi += b_ar_vec[ip] * b_diff[i - 1 - ip];
                        }
                        // MA component
                        for (int iq = 0; iq < p_sP; iq++) {
@@ -220,8 +210,7 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                            yi += b_ma_vec[iq] * b_res[i - 1 - iq];
                        }
 
-                       b_states[i] = yi;
-                       b_diff[i] = yi + b_res[i];
+                       b_diff[i] = yi;
                      }
                    });
 
