@@ -65,24 +65,6 @@ struct RegressionParams {
   uint64_t seed;
 };
 
-/** General information about a time series dataset */
-struct TimeSeriesParams {
-  int batch_size;
-  int n_obs;
-};
-
-/** Holds params needed to generate ARIMA dataset */
-struct ARIMAOrder {
-  int p;  // Basic order
-  int d;
-  int q;
-  int P;  // Seasonal order
-  int D;
-  int Q;
-  int s;  // Seasonal period
-  int k;  // Fit intercept?
-};
-
 /**
  * @brief A simple object to hold the loaded dataset for benchmarking
  * @tparam D type of the dataset (type of X)
@@ -171,16 +153,6 @@ struct Dataset {
                                   stream);
       allocator->deallocate(tmpX, p.nrows * p.ncols * sizeof(D), stream);
     }
-  }
-
-  /**
-   * Generate random times series for a given ARIMA order.
-   * Assumes that the user has already called `allocate`
-   */
-  void arima(const cumlHandle& handle, const DatasetParams& p,
-                  const RegressionParams& r) {
-    /// TODO: fill
-    /// TODO: separate time series datasets in another file/class
   }
 
   /**

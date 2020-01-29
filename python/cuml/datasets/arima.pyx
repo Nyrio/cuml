@@ -86,7 +86,7 @@ inp_to_dtype = {
 
 def make_arima(batch_size=1000, n_obs=100, order=(1, 1, 1),
                seasonal_order=(0, 0, 0, 0), fit_intercept=False,
-               scale = 1.0, noise_scale = 0.2, intercept_scale = 1.0,
+               scale=1.0, noise_scale=0.2, intercept_scale=1.0,
                coef=False, random_state=None,
                dtype='double', handle=None):
     """TODO: docs
