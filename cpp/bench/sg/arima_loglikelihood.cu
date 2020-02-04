@@ -61,7 +61,7 @@ class ArimaLoglikelihood : public ArimaFixture<D> {
     // Set sigma2 parameters to 1.0
     thrust::for_each(thrust::cuda::par.on(stream), counting,
                      counting + params.batch_size,
-                     [=] __device__(int bid) { x[bid * (N + 1) - 1] = 1.0; });
+                     [=] __device__(int bid) { x[(bid + 1) * N - 1] = 1.0; });
 
     // Create arrays for log-likelihood and residual
     D* loglike = (D*)allocator->allocate(params.batch_size * sizeof(D), stream);
