@@ -14,6 +14,7 @@
 # limitations under the License.
 #
 import os
+import warnings
 import cuml
 from cuml.utils import input_utils
 import numpy as np
@@ -28,7 +29,7 @@ def fit_kneighbors(m, x):
     m.kneighbors(x)
 
 
-def fit(m, x, y=None):
+def fit(m, x=None, y=None):
     m.fit(x) if y is None else m.fit(x, y)
 
 
@@ -38,6 +39,10 @@ def fit_transform(m, x):
 
 def predict(m, x):
     m.predict(x)
+
+
+def fit_time_series(m, x):
+    m.fit()
 
 
 def _training_data_to_numpy(X, y):
@@ -135,3 +140,45 @@ def _treelite_fil_accuracy_score(y_true, y_pred):
         return cuml.metrics.accuracy_score(y_true, y_pred_binary)
     else:
         raise TypeError("Received unsupported input type")
+
+
+class StatsmodelsSARIMAXWrapper:
+    def __init__(self, y, order, seasonal_order, fit_intercept):
+        import statsmodels.api as sm
+        batch_size = y.shape[1]
+        trend = 'c' if fit_intercept else 'n'
+        self.models = []
+        for i in range(batch_size):
+            self.models.append(sm.tsa.SARIMAX(y[:, i], order=order,
+                                              seasonal_order=seasonal_order,
+                                              trend=trend))
+
+    def fit(self):
+        from statsmodels.tools.sm_exceptions import ConvergenceWarning
+        self.res = []
+        conv_warnings = 0
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            warnings.simplefilter("error", category=ConvergenceWarning)
+            for model in self.models:
+                try:
+                    self.res.append(model.fit(disp=0))
+                except ConvergenceWarning as e:
+                    conv_warnings += 1
+        if conv_warnings:
+            print("WARNING: statmodels - {} batch members failed to converge"
+                  .format(conv_warnings))
+
+
+def _build_statsmodels_SARIMAX(m, data, arg={}, tmpdir=None):
+    order = arg["order"] if "order" in arg else (1, 1, 1, 0, 0, 0, 0, 0)
+    p, d, q, P, D, Q, s, k = order
+    y, *_ = data
+    return StatsmodelsSARIMAXWrapper(y, (p, d, q), (P, D, Q, s), k)
+
+
+def _build_cuml_ARIMA(m, data, arg={}, tmpdir=None):
+    order = arg["order"] if "order" in arg else (1, 1, 1, 0, 0, 0, 0, 0)
+    p, d, q, P, D, Q, s, k = order
+    y, *_ = data
+    return cuml.tsa.arima.ARIMA(y, (p, d, q), (P, D, Q, s), k)

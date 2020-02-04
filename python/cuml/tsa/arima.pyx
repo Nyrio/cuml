@@ -643,9 +643,10 @@ class ARIMA(Base):
                                                maxiter=maxiter)
 
         # Handle non-zero flags with Warning
-        if (flags != 0).any():
-            print("WARNING(`fit`): Some batch members had optimizer problems.",
-                  file=sys.stderr)
+        sum_flags = sum(flags != 0)
+        if sum_flags:
+            print("WARNING: {} batch members had optimizer problems."
+                  .format(sum_flags), file=sys.stderr)
 
         self.unpack(self._batched_transform(x))
         self.niter = niter

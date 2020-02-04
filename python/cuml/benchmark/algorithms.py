@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2019, NVIDIA CORPORATION.
+# Copyright (c) 2019-2020, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,9 +32,13 @@ from cuml.benchmark.bench_helper_funcs import (
     fit_kneighbors,
     fit_transform,
     predict,
+    fit_time_series,
     _build_fil_classifier,
     _build_treelite_classifier,
     _treelite_fil_accuracy_score,
+    StatsmodelsSARIMAXWrapper,
+    _build_statsmodels_SARIMAX,
+    _build_cuml_ARIMA
 )
 from cuml.utils.import_utils import has_treelite
 
@@ -338,6 +342,16 @@ def all_algorithms():
             cpu_data_prep_hook=_treelite_format_hook,
             accuracy_function=_treelite_fil_accuracy_score,
             bench_func=predict,
+        ),
+        AlgorithmPair(
+            StatsmodelsSARIMAXWrapper,
+            cuml.tsa.arima.ARIMA,
+            shared_args={},
+            name="ARIMA",
+            accepts_labels=False,
+            setup_cpu_func=_build_statsmodels_SARIMAX,
+            setup_cuml_func=_build_cuml_ARIMA,
+            bench_func=fit_time_series,
         ),
     ]
 

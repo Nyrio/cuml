@@ -44,6 +44,7 @@ from urllib.request import urlretrieve
 import gzip
 import functools
 from cuml.utils import input_utils
+from cuml.datasets import make_arima
 from numba import cuda
 
 
@@ -77,6 +78,22 @@ def _gen_data_blobs(n_samples, n_features, random_state=42, centers=None):
     )
 
 
+def _gen_data_arima(n_samples, n_features, random_state=42, order=(1, 1, 1),
+                    seasonal_order=(0, 0, 0, 0), fit_intercept=False):
+    if n_samples == 0:
+        n_samples = 100
+    if n_features == 0:
+        n_features = 10000
+    X_arr = make_arima(batch_size=n_features, n_obs=n_samples, order=order,
+                       seasonal_order= seasonal_order,
+                       fit_intercept=fit_intercept, random_state=random_state,
+                       dtype='double')
+    return (
+        pd.DataFrame(X_arr.copy_to_host()),
+        None
+    )
+
+
 def _gen_data_zeros(n_samples, n_features, random_state=42):
     """Dummy generator for use in testing - returns all 0s"""
     return (
@@ -88,7 +105,7 @@ def _gen_data_zeros(n_samples, n_features, random_state=42):
 def _gen_data_classification(
     n_samples, n_features, random_state=42, n_classes=2
 ):
-    """Wrapper for sklearn make_blobs"""
+    """Wrapper for sklearn make_classification"""
     if n_samples == 0:
         n_samples = int(1e6)
     if n_features == 0:
@@ -164,7 +181,7 @@ def _convert_to_numpy(data):
     if data is None:
         return None
     elif isinstance(data, tuple):
-        return tuple([_convert_to_numpy(d) for d in data])
+        return tuple(_convert_to_numpy(d) for d in data)
     elif isinstance(data, np.ndarray):
         return data
     elif isinstance(data, (pd.DataFrame, pd.Series)):
@@ -177,7 +194,7 @@ def _convert_to_cudf(data):
     if data is None:
         return None
     elif isinstance(data, tuple):
-        return tuple([_convert_to_cudf(d) for d in data])
+        return tuple(_convert_to_cudf(d) for d in data)
     elif isinstance(data, pd.DataFrame):
         return cudf.DataFrame.from_pandas(data)
     elif isinstance(data, pd.Series):
@@ -190,7 +207,7 @@ def _convert_to_pandas(data):
     if data is None:
         return None
     elif isinstance(data, tuple):
-        return tuple([_convert_to_pandas(d) for d in data])
+        return tuple(_convert_to_pandas(d) for d in data)
     elif isinstance(data, pd.DataFrame):
         return data
     elif isinstance(data, pd.Series):
@@ -205,7 +222,7 @@ def _convert_to_gpuarray(data, order='F'):
     if data is None:
         return None
     elif isinstance(data, tuple):
-        return tuple([_convert_to_gpuarray(d, order=order) for d in data])
+        return tuple(_convert_to_gpuarray(d, order=order) for d in data)
     elif isinstance(data, pd.DataFrame):
         return _convert_to_gpuarray(cudf.DataFrame.from_pandas(data),
                                     order=order)
@@ -226,6 +243,7 @@ _data_generators = {
     'classification': _gen_data_classification,
     'regression': _gen_data_regression,
     'higgs': _gen_data_higgs,
+    'arima': _gen_data_arima,
 }
 _data_converters = {
     'numpy': _convert_to_numpy,
@@ -292,4 +310,5 @@ def gen_data(
         data = (*data, None, None)  # No test set
 
     data = _data_converters[dataset_format](data)
+
     return data
