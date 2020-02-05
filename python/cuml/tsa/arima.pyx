@@ -649,6 +649,7 @@ class ARIMA(Base):
         if sum_flags:
             print("WARNING: {} batch members had optimizer problems."
                   .format(sum_flags), file=sys.stderr)
+        print(np.nonzero(flags))
 
         self.unpack(self._batched_transform(x))
         self.niter = niter
