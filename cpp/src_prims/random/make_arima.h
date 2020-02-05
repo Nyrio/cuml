@@ -42,9 +42,9 @@ template <typename DataT>
 void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                 std::shared_ptr<deviceAllocator> allocator, cudaStream_t stream,
                 DataT scale = (DataT)1.0, DataT noise_scale = (DataT)0.2,
-                DataT intercept_scale = (DataT)1.0, DataT* d_mu = nullptr,
-                DataT* d_ar = nullptr, DataT* d_ma = nullptr,
-                DataT* d_sar = nullptr, DataT* d_sma = nullptr,
+                DataT intercept_scale = (DataT)1.0,
+                ML::ARIMAParams<DataT> params = ML::ARIMAParams<DataT>(
+                  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr),
                 uint64_t seed = 0ULL, GeneratorType type = GenPhilox) {
   int d_sD = order.d + order.s * order.D;
   int p_sP = order.p + order.s * order.P;
@@ -69,52 +69,53 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   device_buffer<DataT> sar(allocator, stream);
   device_buffer<DataT> sma(allocator, stream);
   if (order.k) {
-    if (d_mu == nullptr) {
+    if (params.mu == nullptr) {
       mu.resize(batch_size, stream);
-      d_mu = mu.data();
+      params.mu = mu.data();
     }
-    gpu_gen.uniform(d_mu, batch_size, -intercept_scale, intercept_scale,
+    gpu_gen.uniform(params.mu, batch_size, -intercept_scale, intercept_scale,
                     stream);
   }
   if (order.p) {
-    if (d_ar == nullptr) {
+    if (params.ar == nullptr) {
       ar.resize(batch_size * order.p, stream);
-      d_ar = ar.data();
+      params.ar = ar.data();
     }
     ar_temp.resize(batch_size * order.p, stream);
     gpu_gen.uniform(ar_temp.data(), batch_size * order.p, (DataT)-1.0,
                     (DataT)1.0, stream);
   }
   if (order.q) {
-    if (d_ma == nullptr) {
+    if (params.ma == nullptr) {
       ma.resize(batch_size * order.q, stream);
-      d_ma = ma.data();
+      params.ma = ma.data();
     }
     ma_temp.resize(batch_size * order.q, stream);
     gpu_gen.uniform(ma_temp.data(), batch_size * order.q, (DataT)-1.0,
                     (DataT)1.0, stream);
   }
   if (order.P) {
-    if (d_sar == nullptr) {
+    if (params.sar == nullptr) {
       sar.resize(batch_size * order.P, stream);
-      d_sar = sar.data();
+      params.sar = sar.data();
     }
     sar_temp.resize(batch_size * order.P, stream);
     gpu_gen.uniform(sar_temp.data(), batch_size * order.P, (DataT)-1.0,
                     (DataT)1.0, stream);
   }
   if (order.Q) {
-    if (d_sma == nullptr) {
+    if (params.sma == nullptr) {
       sma.resize(batch_size * order.Q, stream);
-      d_sma = sma.data();
+      params.sma = sma.data();
     }
     sma_temp.resize(batch_size * order.Q, stream);
     gpu_gen.uniform(sma_temp.data(), batch_size * order.Q, (DataT)-1.0,
                     (DataT)1.0, stream);
   }
-  TimeSeries::batched_jones_transform(
-    order, batch_size, false, ar_temp.data(), ma_temp.data(), sar_temp.data(),
-    sma_temp.data(), d_ar, d_ma, d_sar, d_sma, allocator, stream);
+  ML::ARIMAParams<DataT> params_temp(nullptr, ar_temp.data(), ma_temp.data(),
+                                     sar_temp.data(), sma_temp.data(), nullptr);
+  TimeSeries::batched_jones_transform(order, batch_size, false, params_temp,
+                                      params, allocator, stream);
 
   // Create lag coefficient vectors for the AR+SAR and MA+SMA components
   device_buffer<DataT> ar_vec(allocator, stream);
@@ -123,6 +124,8 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   ma_vec.resize(batch_size * q_sQ, stream);
   DataT* d_ar_vec = ar_vec.data();
   DataT* d_ma_vec = ar_vec.data();
+  DataT *d_ar = params.ar, *d_ma = params.ar, *d_sar = params.ar,
+        *d_sma = params.ar;
   if (p_sP) {
     thrust::for_each(thrust::cuda::par.on(stream), counting,
                      counting + batch_size, [=] __device__(int ib) {
@@ -199,7 +202,7 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   if (d_sD || order.k) {
     TimeSeries::finalize_forecast(d_diff, starting_values.data(), n_obs - d_sD,
                                   batch_size, d_sD, d_sD, order.d, order.D,
-                                  order.s, stream, order.k, d_mu);
+                                  order.s, stream, order.k, params.mu);
   }
 
   // Copy to output if we didn't write directly to the output vector

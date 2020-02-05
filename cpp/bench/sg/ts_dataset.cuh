@@ -71,10 +71,9 @@ struct TimeSeriesDataset {
     auto stream = handle.getStream();
     auto allocator = handle.getDeviceAllocator();
 
-    MLCommon::Random::make_arima<D>(X, p.batch_size, p.n_obs, order, allocator,
-                                    stream, (D)scale.series, (D)scale.noise,
-                                    (D)scale.intercept, nullptr, nullptr,
-                                    nullptr, nullptr, nullptr, p.seed);
+    MLCommon::Random::make_arima<D>(
+      X, p.batch_size, p.n_obs, order, allocator, stream, (D)scale.series,
+      (D)scale.noise, (D)scale.intercept, ARIMAParams<D>(), p.seed);
   }
 };
 

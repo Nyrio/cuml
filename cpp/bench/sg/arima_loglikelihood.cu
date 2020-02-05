@@ -20,8 +20,8 @@
 #include <thrust/for_each.h>
 #include <thrust/iterator/counting_iterator.h>
 
-#include "arima/batched_arima.hpp"
 #include "cuml/tsa/arima_common.h"
+#include "cuml/tsa/batched_arima.hpp"
 #include "random/rng.h"
 
 #include "benchmark.cuh"

@@ -25,31 +25,30 @@ template <typename DataT, typename IdxT>
 inline void make_arima_helper(const cumlHandle& handle, DataT* out,
                               IdxT batch_size, IdxT n_obs, ARIMAOrder order,
                               DataT scale, DataT noise_scale,
-                              DataT intercept_scale, DataT* d_mu, DataT* d_ar,
-                              DataT* d_ma, DataT* d_sar, DataT* d_sma,
+                              DataT intercept_scale, ARIMAParams<DataT> params,
                               uint64_t seed) {
   auto stream = handle.getStream();
   auto allocator = handle.getImpl().getDeviceAllocator();
 
   MLCommon::Random::make_arima(out, batch_size, n_obs, order, allocator, stream,
-                               scale, noise_scale, intercept_scale, d_mu, d_ar,
-                               d_ma, d_sar, d_sma, seed);
+                               scale, noise_scale, intercept_scale, params,
+                               seed);
 }
 
 void make_arima(const cumlHandle& handle, float* out, int batch_size, int n_obs,
                 ARIMAOrder order, float scale, float noise_scale,
-                float intercept_scale, float* d_mu, float* d_ar, float* d_ma,
-                float* d_sar, float* d_sma, uint64_t seed) {
+                float intercept_scale, ARIMAParams<float> params,
+                uint64_t seed) {
   make_arima_helper(handle, out, batch_size, n_obs, order, scale, noise_scale,
-                    intercept_scale, d_mu, d_ar, d_ma, d_sar, d_sma, seed);
+                    intercept_scale, params, seed);
 }
 
 void make_arima(const cumlHandle& handle, double* out, int batch_size,
                 int n_obs, ARIMAOrder order, double scale, double noise_scale,
-                double intercept_scale, double* d_mu, double* d_ar,
-                double* d_ma, double* d_sar, double* d_sma, uint64_t seed) {
+                double intercept_scale, ARIMAParams<double> params,
+                uint64_t seed) {
   make_arima_helper(handle, out, batch_size, n_obs, order, scale, noise_scale,
-                    intercept_scale, d_mu, d_ar, d_ma, d_sar, d_sma, seed);
+                    intercept_scale, params, seed);
 }
 
 }  // namespace Datasets

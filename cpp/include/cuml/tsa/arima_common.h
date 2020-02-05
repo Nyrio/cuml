@@ -61,6 +61,11 @@ struct ARIMAParams {
   DataT* sma = nullptr;
   DataT* sigma2 = nullptr;
 
+  ARIMAParams() {}
+  ARIMAParams(DataT* mu, DataT* ar, DataT* ma, DataT* sar, DataT* sma,
+              DataT* sigma2)
+    : mu(mu), ar(ar), ma(ma), sar(sar), sma(sma), sigma2(sigma2) {}
+
   /**
    * Allocate all the parameter device arrays
    *

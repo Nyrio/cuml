@@ -39,6 +39,14 @@ cdef extern from "cuml/tsa/arima_common.h" namespace "ML":
         int Q
         int s  # Seasonal period
         int k  # Fit intercept?
+    
+    cdef cppclass ARIMAParams[DataT]:
+        DataT* mu
+        DataT* ar
+        DataT* ma
+        DataT* sar
+        DataT* sma
+        DataT* sigma2
 
 cdef extern from "cuml/datasets/make_arima.hpp" namespace "ML":
     void cpp_make_arima "ML::Datasets::make_arima" (
@@ -50,11 +58,7 @@ cdef extern from "cuml/datasets/make_arima.hpp" namespace "ML":
         float scale,
         float noise_scale,
         float intercept_scale,
-        float* d_mu,
-        float* d_ar,
-        float* d_ma,
-        float* d_sar,
-        float* d_sma,
+        ARIMAParams[float] params,
         uint64_t seed
     )
 
@@ -67,11 +71,7 @@ cdef extern from "cuml/datasets/make_arima.hpp" namespace "ML":
         double scale,
         double noise_scale,
         double intercept_scale,
-        double* d_mu,
-        double* d_ar,
-        double* d_ma,
-        double* d_sar,
-        double* d_sma,
+        ARIMAParams[double] params,
         uint64_t seed
     )
 
@@ -133,21 +133,35 @@ def make_arima(batch_size=1000, n_obs=100, order=(1, 1, 1),
         d_sma = zeros((cpp_order.Q, batch_size), dtype=dtype, order='F')
         d_sma_ptr = get_dev_array_ptr(d_sma)
 
+    # TODO: find better way to do that
+    cdef ARIMAParams[float] cpp_params_float
+    cdef ARIMAParams[double] cpp_params_double
+    if dtype == np.float32:
+        cpp_params_float.mu = <float*> d_mu_ptr
+        cpp_params_float.ar = <float*> d_ar_ptr
+        cpp_params_float.ma = <float*> d_ma_ptr
+        cpp_params_float.sar = <float*> d_sar_ptr
+        cpp_params_float.sma = <float*> d_sma_ptr
+        cpp_params_float.sigma2 = <float*> NULL
+    else:
+        cpp_params_double.mu = <double*> d_mu_ptr
+        cpp_params_double.ar = <double*> d_ar_ptr
+        cpp_params_double.ma = <double*> d_ma_ptr
+        cpp_params_double.sar = <double*> d_sar_ptr
+        cpp_params_double.sma = <double*> d_sma_ptr
+        cpp_params_double.sigma2 = <double*> NULL
+
     if dtype == np.float32:
         cpp_make_arima(handle_[0], <float*> out_ptr, <int> batch_size,
                        <int> n_obs, cpp_order, <float> scale,
                        <float> noise_scale, <float> intercept_scale,
-                       <float*> d_mu_ptr, <float*> d_ar_ptr,
-                       <float*> d_ma_ptr, <float*> d_sar_ptr,
-                       <float*> d_sma_ptr, <uint64_t> random_state)
+                       cpp_params_float, <uint64_t> random_state)
 
     else:
         cpp_make_arima(handle_[0], <double*> out_ptr, <int> batch_size,
                        <int> n_obs, cpp_order, <double> scale,
                        <double> noise_scale, <double> intercept_scale,
-                       <double*> d_mu_ptr, <double*> d_ar_ptr,
-                       <double*> d_ma_ptr, <double*> d_sar_ptr,
-                       <double*> d_sma_ptr, <uint64_t> random_state)
+                       cpp_params_double, <uint64_t> random_state)
 
     if coef:
         params = dict()
