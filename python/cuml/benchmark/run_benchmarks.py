@@ -111,7 +111,21 @@ if __name__ == '__main__':
         metavar='N',
         help='Shortcut for --min-rows N --max-rows N --num-sizes 1'
     )
-    parser.add_argument('--num-features', type=int, default=-1)
+    parser.add_argument('--num-features', type=int, default=None)
+    parser.add_argument(
+        '--list-rows',
+        type=int,
+        nargs='+',
+        default=[],
+        help='List the desired numbers of rows to use'
+    )
+    parser.add_argument(
+        '--list-features',
+        type=int,
+        nargs='+',
+        default=[],
+        help='List the desired numbers of features to use'
+    )
     parser.add_argument(
         '--quiet', '-q', action='store_false', dest='verbose', default=True
     )
@@ -201,11 +215,16 @@ if __name__ == '__main__':
 
     bench_dims = args.input_dimensions
 
-    if args.num_rows is not None:
+    if args.list_rows:
+        bench_rows = args.list_rows
+    elif args.num_rows is not None:
         bench_rows = [args.num_rows]
 
-    if args.num_features > 0:
+    if args.list_features:
+        bench_dims = args.list_features
+    elif args.num_features is not None:
         bench_dims = [args.num_features]
+
     if args.default_size:
         bench_rows = [0]
         bench_dims = [0]

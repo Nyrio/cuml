@@ -81,7 +81,6 @@ def _gen_data_blobs(n_samples, n_features, random_state=42, centers=None):
 def _gen_data_arima(n_samples, n_features, random_state=42,
                     order=(1, 1, 1, 0, 0, 0, 0, 0)):
     p, d, q, P, D, Q, s, k = order
-    print(order)
     if n_samples == 0:
         n_samples = 100
     if n_features == 0:

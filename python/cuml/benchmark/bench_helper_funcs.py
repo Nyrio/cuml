@@ -181,5 +181,4 @@ def _build_cuml_ARIMA(m, data, arg={}, tmpdir=None):
     order = arg["order"] if "order" in arg else (1, 1, 1, 0, 0, 0, 0, 0)
     p, d, q, P, D, Q, s, k = order
     y, *_ = data
-    print(order)
     return cuml.tsa.arima.ARIMA(y, (p, d, q), (P, D, Q, s), k)
