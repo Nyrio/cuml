@@ -14,9 +14,6 @@
  * limitations under the License.
  */
 
-#include "arima_helpers.cuh"
-#include "batched_kalman.hpp"
-
 #include <algorithm>
 #include <vector>
 
@@ -25,22 +22,17 @@
 #include <cub/cub.cuh>
 
 #include <cuml/cuml.hpp>
+#include <cuml/tsa/batched_kalman.hpp>
 
 #include "common/cumlHandle.hpp"
 #include "common/nvtx.hpp"
 #include "cuda_utils.h"
-#include "linalg/batched/batched_matrix.h"
+#include "linalg/batched/matrix.h"
 #include "linalg/binary_op.h"
 #include "linalg/cublas_wrappers.h"
 #include "sparse/batched/csr.h"
-#include "timeSeries/jones_transform.h"
+#include "timeSeries/arima_helpers.h"
 #include "utils.h"
-
-using MLCommon::LinAlg::Batched::b_gemm;
-using MLCommon::LinAlg::Batched::b_kron;
-using MLCommon::LinAlg::Batched::b_solve;
-using BatchedCSR = MLCommon::Sparse::Batched::BatchedCSR<double>;
-using BatchedMatrix = MLCommon::LinAlg::Batched::BatchedMatrix<double>;
 
 namespace ML {
 
@@ -211,13 +203,15 @@ __global__ void batched_kalman_loop_kernel(const double* ys, int nobs,
  * @param[in]  fc_steps     Number of steps to forecast
  * @param[in]  d_fc         Array to store the forecast
  */
-void _batched_kalman_loop_large(const double* d_ys, int nobs,
-                                const BatchedMatrix& T, const BatchedMatrix& Z,
-                                const BatchedMatrix& RRT, BatchedMatrix& P,
-                                BatchedMatrix& alpha, BatchedCSR& T_sparse,
-                                int r, double* d_vs, double* d_Fs,
-                                double* d_sum_logFs, int fc_steps = 0,
-                                double* d_fc = nullptr) {
+void _batched_kalman_loop_large(
+  const double* d_ys, int nobs,
+  const MLCommon::LinAlg::Batched::Matrix<double>& T,
+  const MLCommon::LinAlg::Batched::Matrix<double>& Z,
+  const MLCommon::LinAlg::Batched::Matrix<double>& RRT,
+  MLCommon::LinAlg::Batched::Matrix<double>& P,
+  MLCommon::LinAlg::Batched::Matrix<double>& alpha,
+  MLCommon::Sparse::Batched::CSR<double>& T_sparse, int r, double* d_vs,
+  double* d_Fs, double* d_sum_logFs, int fc_steps = 0, double* d_fc = nullptr) {
   auto stream = T.stream();
   auto allocator = T.allocator();
   auto cublasHandle = T.cublasHandle();
@@ -225,10 +219,14 @@ void _batched_kalman_loop_large(const double* d_ys, int nobs,
   int r2 = r * r;
 
   // Temporary matrices and vectors
-  BatchedMatrix v_tmp(r, 1, nb, cublasHandle, allocator, stream, false);
-  BatchedMatrix m_tmp(r, r, nb, cublasHandle, allocator, stream, false);
-  BatchedMatrix K(r, 1, nb, cublasHandle, allocator, stream, false);
-  BatchedMatrix TP(r, r, nb, cublasHandle, allocator, stream, false);
+  MLCommon::LinAlg::Batched::Matrix<double> v_tmp(r, 1, nb, cublasHandle,
+                                                  allocator, stream, false);
+  MLCommon::LinAlg::Batched::Matrix<double> m_tmp(r, r, nb, cublasHandle,
+                                                  allocator, stream, false);
+  MLCommon::LinAlg::Batched::Matrix<double> K(r, 1, nb, cublasHandle, allocator,
+                                              stream, false);
+  MLCommon::LinAlg::Batched::Matrix<double> TP(r, r, nb, cublasHandle,
+                                               allocator, stream, false);
 
   // Shortcuts
   double* d_P = P.raw_data();
@@ -255,7 +253,8 @@ void _batched_kalman_loop_large(const double* d_ys, int nobs,
     // 3. K = 1/Fs[it] * T*P*Z'
     // TP = T*P (also used later)
     MLCommon::Sparse::Batched::b_spmm(1.0, T_sparse, P, 0.0, TP);
-    // b_gemm(false, false, r, r, r, 1.0, T, P, 0.0, TP); // dense
+    // MLCommon::LinAlg::Batched::b_gemm(false, false, r, r, r, 1.0, T, P, 0.0,
+    //                                   TP);  // dense
     // K = 1/Fs[it] * TP*Z' ; optimized for Z = (1 0 ... 0)
     thrust::for_each(thrust::cuda::par.on(stream), counting, counting + nb,
                      [=] __device__(int bid) {
@@ -289,11 +288,13 @@ void _batched_kalman_loop_large(const double* d_ys, int nobs,
                          d_m_tmp[bid * r2 + i] -= d_K[bid * r + i];
                        }
                      });
-    // b_gemm(false, false, r, r, 1, -1.0, K, Z, 1.0, m_tmp); // generic
+    // MLCommon::LinAlg::Batched::b_gemm(false, false, r, r, 1, -1.0, K, Z, 1.0,
+    //                                   m_tmp);  // generic
 
     // 6. P = T*P*L' + R*R'
     // P = TP*L'
-    b_gemm(false, true, r, r, r, 1.0, TP, m_tmp, 0.0, P);
+    MLCommon::LinAlg::Batched::b_gemm(false, true, r, r, r, 1.0, TP, m_tmp, 0.0,
+                                      P);
     // P = P + R*R'
     MLCommon::LinAlg::binaryOp(
       d_P, d_P, RRT.raw_data(), r2 * nb,
@@ -315,12 +316,15 @@ void _batched_kalman_loop_large(const double* d_ys, int nobs,
  * Wrapper around multiple functions that can execute the Kalman loop in
  * difference cases (for performance)
  */
-void batched_kalman_loop(const double* ys, int nobs, const BatchedMatrix& T,
-                         const BatchedMatrix& Z, const BatchedMatrix& RRT,
-                         BatchedMatrix& P0, BatchedMatrix& alpha,
-                         BatchedCSR& T_sparse, int r, double* vs, double* Fs,
-                         double* sum_logFs, int fc_steps = 0,
-                         double* d_fc = nullptr) {
+void batched_kalman_loop(const double* ys, int nobs,
+                         const MLCommon::LinAlg::Batched::Matrix<double>& T,
+                         const MLCommon::LinAlg::Batched::Matrix<double>& Z,
+                         const MLCommon::LinAlg::Batched::Matrix<double>& RRT,
+                         MLCommon::LinAlg::Batched::Matrix<double>& P0,
+                         MLCommon::LinAlg::Batched::Matrix<double>& alpha,
+                         MLCommon::Sparse::Batched::CSR<double>& T_sparse,
+                         int r, double* vs, double* Fs, double* sum_logFs,
+                         int fc_steps = 0, double* d_fc = nullptr) {
   const int batch_size = T.batches();
   auto stream = T.stream();
   dim3 numThreadsPerBlock(32, 1);
@@ -401,8 +405,8 @@ __global__ void batched_kalman_loglike_kernel(const double* d_vs,
     int idx = (it + tid) + bid * nobs;
     double d_vs2_Fs = 0.0;
     if (it + tid < nobs) {
-      double vs_idx = d_vs[idx];
-      d_vs2_Fs = vs_idx * vs_idx / d_Fs[idx];
+      double _vi = d_vs[idx];
+      d_vs2_Fs = _vi * _vi / d_Fs[idx];
     }
     __syncthreads();
     double partial_sum = BlockReduce(temp_storage).Sum(d_vs2_Fs, nobs - it);
@@ -427,11 +431,13 @@ void batched_kalman_loglike(const double* d_vs, const double* d_Fs,
 
 // Internal Kalman filter implementation that assumes data exists on GPU.
 void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
-                            const BatchedMatrix& Zb, const BatchedMatrix& Tb,
-                            const BatchedMatrix& Rb, std::vector<bool>& T_mask,
-                            int r, double* d_vs, double* d_Fs,
-                            double* d_loglike, const double* d_sigma2,
-                            int fc_steps = 0, double* d_fc = nullptr) {
+                            const MLCommon::LinAlg::Batched::Matrix<double>& Zb,
+                            const MLCommon::LinAlg::Batched::Matrix<double>& Tb,
+                            const MLCommon::LinAlg::Batched::Matrix<double>& Rb,
+                            std::vector<bool>& T_mask, int r, double* d_vs,
+                            double* d_Fs, double* d_loglike,
+                            const double* d_sigma2, int fc_steps = 0,
+                            double* d_fc = nullptr) {
   const size_t batch_size = Zb.batches();
   auto stream = handle.getStream();
   auto cublasHandle = handle.getImpl().getCublasHandle();
@@ -439,7 +445,8 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
 
   auto counting = thrust::make_counting_iterator(0);
 
-  BatchedMatrix RQb(r, 1, batch_size, cublasHandle, allocator, stream, true);
+  MLCommon::LinAlg::Batched::Matrix<double> RQb(r, 1, batch_size, cublasHandle,
+                                                allocator, stream, true);
   double* d_RQ = RQb.raw_data();
   const double* d_R = Rb.raw_data();
   thrust::for_each(thrust::cuda::par.on(stream), counting,
@@ -449,25 +456,28 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
                        d_RQ[bid * r + i] = d_R[bid * r + i] * sigma2;
                      }
                    });
-  BatchedMatrix RRT = b_gemm(RQb, Rb, false, true);
+  MLCommon::LinAlg::Batched::Matrix<double> RRT =
+    MLCommon::LinAlg::Batched::b_gemm(RQb, Rb, false, true);
 
   // Note: not always used
   // (TODO: condition here and passed to Kalman loop?)
-  BatchedCSR T_sparse =
-    BatchedCSR::from_dense(Tb, T_mask, handle.getImpl().getcusolverSpHandle());
+  MLCommon::Sparse::Batched::CSR<double> T_sparse =
+    MLCommon::Sparse::Batched::CSR<double>::from_dense(
+      Tb, T_mask, handle.getImpl().getcusolverSpHandle());
 
   // Durbin Koopman "Time Series Analysis" pg 138
   ML::PUSH_RANGE("Init P");
   // Use the dense version for small matrices, the sparse version otherwise
-  BatchedMatrix P =
+  MLCommon::LinAlg::Batched::Matrix<double> P =
     (r <= 8 && batch_size <= 1024)
       ? MLCommon::LinAlg::Batched::b_lyapunov(Tb, RRT)
       : MLCommon::Sparse::Batched::b_lyapunov(T_sparse, T_mask, RRT);
   ML::POP_RANGE();
 
   // init alpha to zero
-  BatchedMatrix alpha(r, 1, batch_size, handle.getImpl().getCublasHandle(),
-                      handle.getDeviceAllocator(), stream, true);
+  MLCommon::LinAlg::Batched::Matrix<double> alpha(
+    r, 1, batch_size, handle.getImpl().getCublasHandle(),
+    handle.getDeviceAllocator(), stream, true);
 
   // init vs, Fs
   // In batch-major format.
@@ -488,8 +498,9 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
 
 static void init_batched_kalman_matrices(
   cumlHandle& handle, const double* d_ar, const double* d_ma,
-  const double* d_sar, const double* d_sma, int nb, ARIMAOrder order, int r,
-  double* d_Z_b, double* d_R_b, double* d_T_b, std::vector<bool>& T_mask) {
+  const double* d_sar, const double* d_sma, int nb, const ARIMAOrder& order,
+  int r, double* d_Z_b, double* d_R_b, double* d_T_b,
+  std::vector<bool>& T_mask) {
   ML::PUSH_RANGE(__func__);
 
   auto stream = handle.getStream();
@@ -514,8 +525,9 @@ static void init_batched_kalman_matrices(
                      //
                      d_R_b[bid * r] = 1.0;
                      for (int i = 0; i < r - 1; i++) {
-                       d_R_b[bid * r + i + 1] = reduced_polynomial<false>(
-                         bid, d_ma, order.q, d_sma, order.Q, order.s, i + 1);
+                       d_R_b[bid * r + i + 1] =
+                         MLCommon::TimeSeries::reduced_polynomial<false>(
+                           bid, d_ma, order.q, d_sma, order.Q, order.s, i + 1);
                      }
 
                      //     |phi_1  1.0  0.0  ...  0.0|
@@ -528,8 +540,9 @@ static void init_batched_kalman_matrices(
                      //
                      double* batch_T = d_T_b + bid * r * r;
                      for (int i = 0; i < r; i++) {
-                       batch_T[i] = reduced_polynomial<true>(
-                         bid, d_ar, order.p, d_sar, order.P, order.s, i + 1);
+                       batch_T[i] =
+                         MLCommon::TimeSeries::reduced_polynomial<true>(
+                           bid, d_ar, order.p, d_sar, order.P, order.s, i + 1);
                      }
                      // shifted identity
                      for (int i = 0; i < r - 1; i++) {
@@ -552,9 +565,10 @@ static void init_batched_kalman_matrices(
 }
 
 void batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
-                           ARIMAParamsD params, ARIMAOrder order,
-                           int batch_size, double* loglike, double* d_vs,
-                           bool host_loglike, int fc_steps, double* d_fc) {
+                           const ARIMAParams<double>& params,
+                           const ARIMAOrder& order, int batch_size,
+                           double* loglike, double* d_vs, bool host_loglike,
+                           int fc_steps, double* d_fc) {
   ML::PUSH_RANGE(__func__);
 
   const size_t ys_len = nobs;
@@ -566,9 +580,12 @@ void batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
   // see (3.18) in TSA by D&K
   int r = order.r();
 
-  BatchedMatrix Zb(1, r, batch_size, cublasHandle, allocator, stream, false);
-  BatchedMatrix Tb(r, r, batch_size, cublasHandle, allocator, stream, false);
-  BatchedMatrix Rb(r, 1, batch_size, cublasHandle, allocator, stream, false);
+  MLCommon::LinAlg::Batched::Matrix<double> Zb(1, r, batch_size, cublasHandle,
+                                               allocator, stream, false);
+  MLCommon::LinAlg::Batched::Matrix<double> Tb(r, r, batch_size, cublasHandle,
+                                               allocator, stream, false);
+  MLCommon::LinAlg::Batched::Matrix<double> Rb(r, 1, batch_size, cublasHandle,
+                                               allocator, stream, false);
 
   std::vector<bool> T_mask;
   init_batched_kalman_matrices(handle, params.ar, params.ma, params.sar,
@@ -604,130 +621,37 @@ void batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
   ML::POP_RANGE();
 }
 
-/* AR and MA parameters have to be within a "triangle" region (i.e., subject to
- * an inequality) for the inverse transform to not return 'NaN' due to the
- * logarithm within the inverse. This function ensures that inequality is
- * satisfied for all parameters.
- */
-void fix_ar_ma_invparams(const double* d_old_params, double* d_new_params,
-                         int batch_size, int pq, cudaStream_t stream,
-                         bool isAr = true) {
-  CUDA_CHECK(cudaMemcpyAsync(d_new_params, d_old_params,
-                             batch_size * pq * sizeof(double),
-                             cudaMemcpyDeviceToDevice, stream));
-  int n = pq;
-
-  // The parameter must be within a "triangle" region. If not, we bring the
-  // parameter inside by 1%.
-  double eps = 0.99;
-  auto counting = thrust::make_counting_iterator(0);
-  thrust::for_each(
-    thrust::cuda::par.on(stream), counting, counting + batch_size,
-    [=] __device__(int ib) {
-      for (int i = 0; i < n; i++) {
-        double sum = 0.0;
-        for (int j = 0; j < i; j++) {
-          sum += d_new_params[n - j - 1 + ib * n];
-        }
-        // AR is minus
-        if (isAr) {
-          // param < 1-sum(param)
-          d_new_params[n - i - 1 + ib * n] =
-            fmin((1 - sum) * eps, d_new_params[n - i - 1 + ib * n]);
-          // param > -(1-sum(param))
-          d_new_params[n - i - 1 + ib * n] =
-            fmax(-(1 - sum) * eps, d_new_params[n - i - 1 + ib * n]);
-        } else {
-          // MA is plus
-          // param < 1+sum(param)
-          d_new_params[n - i - 1 + ib * n] =
-            fmin((1 + sum) * eps, d_new_params[n - i - 1 + ib * n]);
-          // param > -(1+sum(param))
-          d_new_params[n - i - 1 + ib * n] =
-            fmax(-(1 + sum) * eps, d_new_params[n - i - 1 + ib * n]);
-        }
-      }
-    });
-}
-
-void batched_jones_transform(cumlHandle& handle, ARIMAOrder order,
+void batched_jones_transform(cumlHandle& handle, const ARIMAOrder& order,
                              int batch_size, bool isInv, const double* h_params,
                              double* h_Tparams) {
   int N = order.complexity();
-  auto alloc = handle.getDeviceAllocator();
+  auto allocator = handle.getDeviceAllocator();
   auto stream = handle.getStream();
   double* d_params =
-    (double*)alloc->allocate(N * batch_size * sizeof(double), stream);
+    (double*)allocator->allocate(N * batch_size * sizeof(double), stream);
   double* d_Tparams =
-    (double*)alloc->allocate(N * batch_size * sizeof(double), stream);
-  ARIMAParamsD params, Tparams;
-  allocate_params(alloc, stream, order, batch_size, &params, false);
-  allocate_params(alloc, stream, order, batch_size, &Tparams, true);
+    (double*)allocator->allocate(N * batch_size * sizeof(double), stream);
+  ARIMAParams<double> params, Tparams;
+  params.allocate(order, batch_size, allocator, stream, false);
+  Tparams.allocate(order, batch_size, allocator, stream, true);
 
   MLCommon::updateDevice(d_params, h_params, N * batch_size, stream);
 
-  unpack(d_params, params, batch_size, order, stream);
+  params.unpack(order, batch_size, d_params, stream);
 
-  batched_jones_transform(handle, order, batch_size, isInv, params, Tparams);
+  MLCommon::TimeSeries::batched_jones_transform(
+    order, batch_size, isInv, params, Tparams, allocator, stream);
   Tparams.mu = params.mu;
   Tparams.sigma2 = params.sigma2;
 
-  pack(batch_size, order, Tparams, d_Tparams, stream);
+  Tparams.pack(order, batch_size, d_Tparams, stream);
 
   MLCommon::updateHost(h_Tparams, d_Tparams, N * batch_size, stream);
 
-  alloc->deallocate(d_params, N * batch_size * sizeof(double), stream);
-  alloc->deallocate(d_Tparams, N * batch_size * sizeof(double), stream);
-  deallocate_params(alloc, stream, order, batch_size, params, false);
-  deallocate_params(alloc, stream, order, batch_size, Tparams, true);
-}
-
-/**
- * Auxiliary function of batched_jones_transform to remove redundancy.
- * Applies the transform to the given batched parameters.
- */
-void _transform_helper(cumlHandle& handle, const double* d_param,
-                       double* d_Tparam, int k, int batch_size, bool isInv,
-                       bool isAr) {
-  auto allocator = handle.getDeviceAllocator();
-  auto stream = handle.getStream();
-
-  // inverse transform will produce NaN if parameters are outside of a
-  // "triangle" region
-  double* d_param_fixed =
-    (double*)allocator->allocate(sizeof(double) * batch_size * k, stream);
-  if (isInv) {
-    fix_ar_ma_invparams(d_param, d_param_fixed, batch_size, k, stream, isAr);
-  } else {
-    CUDA_CHECK(cudaMemcpyAsync(d_param_fixed, d_param,
-                               sizeof(double) * batch_size * k,
-                               cudaMemcpyDeviceToDevice, stream));
-  }
-  MLCommon::TimeSeries::jones_transform(d_param_fixed, batch_size, k, d_Tparam,
-                                        isAr, isInv, allocator, stream);
-
-  allocator->deallocate(d_param_fixed, sizeof(double) * batch_size * k, stream);
-}
-
-void batched_jones_transform(cumlHandle& handle, ARIMAOrder order,
-                             int batch_size, bool isInv,
-                             const ARIMAParamsD params, ARIMAParamsD Tparams) {
-  ML::PUSH_RANGE(__func__);
-
-  if (order.p)
-    _transform_helper(handle, params.ar, Tparams.ar, order.p, batch_size, isInv,
-                      true);
-  if (order.q)
-    _transform_helper(handle, params.ma, Tparams.ma, order.q, batch_size, isInv,
-                      false);
-  if (order.P)
-    _transform_helper(handle, params.sar, Tparams.sar, order.P, batch_size,
-                      isInv, true);
-  if (order.Q)
-    _transform_helper(handle, params.sma, Tparams.sma, order.Q, batch_size,
-                      isInv, false);
-
-  ML::POP_RANGE();
+  allocator->deallocate(d_params, N * batch_size * sizeof(double), stream);
+  allocator->deallocate(d_Tparams, N * batch_size * sizeof(double), stream);
+  params.deallocate(order, batch_size, allocator, stream, false);
+  Tparams.deallocate(order, batch_size, allocator, stream, true);
 }
 
 }  // namespace ML

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2020, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,15 +22,15 @@
 #include <vector>
 
 #include "add.h"
-#include "batched_matrix.h"
-#include "linalg/batched/batched_matrix.h"
+#include "linalg/batched/matrix.h"
+#include "linalg_naive.h"
 #include "test_utils.h"
 
 namespace MLCommon {
 namespace LinAlg {
 namespace Batched {
 
-enum BatchedMatrixOperation {
+enum MatrixOperation {
   AB_op,
   AZT_op,
   ZA_op,
@@ -44,8 +44,8 @@ enum BatchedMatrixOperation {
 };
 
 template <typename T>
-struct BatchedMatrixInputs {
-  BatchedMatrixOperation operation;
+struct MatrixInputs {
+  MatrixOperation operation;
   int batch_size;
   int m;  // Usually the dimensions of A and/or Z
   int n;
@@ -57,12 +57,11 @@ struct BatchedMatrixInputs {
 };
 
 template <typename T>
-class BatchedMatrixTest
-  : public ::testing::TestWithParam<BatchedMatrixInputs<T>> {
+class MatrixTest : public ::testing::TestWithParam<MatrixInputs<T>> {
  protected:
   void SetUp() override {
     using std::vector;
-    params = ::testing::TestWithParam<BatchedMatrixInputs<T>>::GetParam();
+    params = ::testing::TestWithParam<MatrixInputs<T>>::GetParam();
 
     // Find out whether A, B and Z will be used (depending on the operation)
     bool use_A = (params.operation != LaggedZ_op);
@@ -145,12 +144,12 @@ class BatchedMatrixTest
     auto allocator = std::make_shared<MLCommon::defaultDeviceAllocator>();
 
     // Created batched matrices
-    BatchedMatrix<T> AbM(params.m, params.n, params.batch_size, handle,
-                         allocator, stream);
-    BatchedMatrix<T> BbM(params.p, params.q, params.batch_size, handle,
-                         allocator, stream);
-    BatchedMatrix<T> ZbM(Z_col ? r : 1, Z_col ? 1 : r, params.batch_size,
-                         handle, allocator, stream);
+    Matrix<T> AbM(params.m, params.n, params.batch_size, handle, allocator,
+                  stream);
+    Matrix<T> BbM(params.p, params.q, params.batch_size, handle, allocator,
+                  stream);
+    Matrix<T> ZbM(Z_col ? r : 1, Z_col ? 1 : r, params.batch_size, handle,
+                  allocator, stream);
 
     // Copy the data to the device
     if (use_A) updateDevice(AbM.raw_data(), A.data(), A.size(), stream);
@@ -158,7 +157,7 @@ class BatchedMatrixTest
     if (use_Z) updateDevice(ZbM.raw_data(), Z.data(), Z.size(), stream);
 
     // Create fake batched matrices to be overwritten by results
-    res_bM = new BatchedMatrix<T>(1, 1, 1, handle, allocator, stream);
+    res_bM = new Matrix<T>(1, 1, 1, handle, allocator, stream);
 
     // Compute the tested results
     switch (params.operation) {
@@ -200,38 +199,38 @@ class BatchedMatrixTest
     switch (params.operation) {
       case AB_op:
         for (int bid = 0; bid < params.batch_size; bid++) {
-          Naive::naiveMatMul(res_h.data() + bid * m_r * n_r,
-                             A.data() + bid * params.m * params.n,
-                             B.data() + bid * params.p * params.q, params.m,
-                             params.n, params.q);
+          Naive::matMul(res_h.data() + bid * m_r * n_r,
+                        A.data() + bid * params.m * params.n,
+                        B.data() + bid * params.p * params.q, params.m,
+                        params.n, params.q);
         }
         break;
       case ApB_op:
-        Naive::naiveAdd(res_h.data(), A.data(), B.data(), A.size());
+        Naive::add(res_h.data(), A.data(), B.data(), A.size());
         break;
       case AmB_op:
-        Naive::naiveAdd(res_h.data(), A.data(), B.data(), A.size(), T(-1.0));
+        Naive::add(res_h.data(), A.data(), B.data(), A.size(), T(-1.0));
         break;
       case AkB_op:
         for (int bid = 0; bid < params.batch_size; bid++) {
-          Naive::naiveKronecker(res_h.data() + bid * m_r * n_r,
-                                A.data() + bid * params.m * params.n,
-                                B.data() + bid * params.p * params.q, params.m,
-                                params.n, params.p, params.q);
+          Naive::kronecker(res_h.data() + bid * m_r * n_r,
+                           A.data() + bid * params.m * params.n,
+                           B.data() + bid * params.p * params.q, params.m,
+                           params.n, params.p, params.q);
         }
         break;
       case AZT_op:
         for (int bid = 0; bid < params.batch_size; bid++) {
-          Naive::naiveMatMul(res_h.data() + bid * m_r * n_r,
-                             A.data() + bid * params.m * params.n,
-                             Z.data() + bid * r, params.m, params.n, 1);
+          Naive::matMul(res_h.data() + bid * m_r * n_r,
+                        A.data() + bid * params.m * params.n,
+                        Z.data() + bid * r, params.m, params.n, 1);
         }
         break;
       case ZA_op:
         for (int bid = 0; bid < params.batch_size; bid++) {
-          Naive::naiveMatMul(res_h.data() + bid * m_r * n_r, Z.data() + bid * r,
-                             A.data() + bid * params.m * params.n, 1, params.m,
-                             params.n);
+          Naive::matMul(res_h.data() + bid * m_r * n_r, Z.data() + bid * r,
+                        A.data() + bid * params.m * params.n, 1, params.m,
+                        params.n);
         }
         break;
       case AsolveZ_op:
@@ -240,22 +239,22 @@ class BatchedMatrixTest
         break;
       case LaggedZ_op:
         for (int bid = 0; bid < params.batch_size; bid++) {
-          Naive::naiveLaggedMat(res_h.data() + bid * m_r * n_r,
-                                Z.data() + bid * params.m, params.m, params.n);
+          Naive::laggedMat(res_h.data() + bid * m_r * n_r,
+                           Z.data() + bid * params.m, params.m, params.n);
         }
         break;
       case CopyA2D_op:
         for (int bid = 0; bid < params.batch_size; bid++) {
-          Naive::naive2DCopy(res_h.data() + bid * m_r * n_r,
-                             A.data() + bid * params.m * params.n, params.s,
-                             params.t, params.m, m_r, n_r);
+          Naive::copy2D(res_h.data() + bid * m_r * n_r,
+                        A.data() + bid * params.m * params.n, params.s,
+                        params.t, params.m, m_r, n_r);
         }
         break;
       case DiffA_op:
         int len = params.m * params.n;
         for (int bid = 0; bid < params.batch_size; bid++) {
-          Naive::naiveDiff(res_h.data() + bid * (len - 1), A.data() + bid * len,
-                           len);
+          Naive::diff(res_h.data() + bid * (len - 1), A.data() + bid * len,
+                      len);
         }
         break;
     }
@@ -270,15 +269,15 @@ class BatchedMatrixTest
   }
 
  protected:
-  BatchedMatrixInputs<T> params;
-  BatchedMatrix<T> *res_bM;
+  MatrixInputs<T> params;
+  Matrix<T> *res_bM;
   std::vector<T> res_h;
   cublasHandle_t handle;
   cudaStream_t stream;
 };
 
 // Test parameters (op, batch_size, m, n, p, q, s, t, tolerance)
-const std::vector<BatchedMatrixInputs<double>> inputsd = {
+const std::vector<MatrixInputs<double>> inputsd = {
   {AB_op, 7, 15, 37, 37, 11, 0, 0, 1e-6},
   {AZT_op, 5, 33, 65, 1, 1, 0, 0, 1e-6},
   {ZA_op, 8, 12, 41, 1, 1, 0, 0, 1e-6},
@@ -296,7 +295,7 @@ const std::vector<BatchedMatrixInputs<double>> inputsd = {
   {DiffA_op, 15, 1, 37, 1, 1, 0, 0, 1e-6}};
 
 // Test parameters (op, batch_size, m, n, p, q, s, t, tolerance)
-const std::vector<BatchedMatrixInputs<float>> inputsf = {
+const std::vector<MatrixInputs<float>> inputsf = {
   {AB_op, 7, 15, 37, 37, 11, 0, 0, 1e-2},
   {AZT_op, 5, 33, 65, 1, 1, 0, 0, 1e-2},
   {ZA_op, 8, 12, 41, 1, 1, 0, 0, 1e-2},
@@ -313,8 +312,8 @@ const std::vector<BatchedMatrixInputs<float>> inputsf = {
   {DiffA_op, 5, 11, 1, 1, 1, 0, 0, 1e-2},
   {DiffA_op, 15, 1, 37, 1, 1, 0, 0, 1e-2}};
 
-using BatchedMatrixTestD = BatchedMatrixTest<double>;
-using BatchedMatrixTestF = BatchedMatrixTest<float>;
+using BatchedMatrixTestD = MatrixTest<double>;
+using BatchedMatrixTestF = MatrixTest<float>;
 TEST_P(BatchedMatrixTestD, Result) {
   ASSERT_TRUE(devArrMatchHost(res_h.data(), res_bM->raw_data(), res_h.size(),
                               CompareApprox<double>(params.tolerance), stream));

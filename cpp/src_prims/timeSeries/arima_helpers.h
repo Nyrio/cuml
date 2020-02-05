@@ -22,10 +22,10 @@
 #include <thrust/for_each.h>
 #include <thrust/iterator/counting_iterator.h>
 
+#include "cuda_utils.h"
+#include "cuml/tsa/arima_common.h"
 #include "linalg/matrix_vector_op.h"
 #include "timeSeries/jones_transform.h"
-
-/// TODO: cleanup, remove duplicates
 
 namespace MLCommon {
 namespace TimeSeries {
@@ -42,14 +42,13 @@ namespace TimeSeries {
  * @return             The value of the coefficient
  */
 template <bool isAr, typename DataT>
-static inline __host__ __device__ DataT _param_to_poly(const DataT* param,
-                                                       int lags, int idx) {
+HDI DataT _param_to_poly(const DataT* param, int lags, int idx) {
   if (idx > lags) {
-    return (DataT)0.0;
+    return 0.0;
   } else if (idx) {
     return isAr ? -param[idx - 1] : param[idx - 1];
   } else
-    return (DataT)1.0;
+    return 1.0;
 }
 
 /**
@@ -68,14 +67,68 @@ static inline __host__ __device__ DataT _param_to_poly(const DataT* param,
  * @return             The value of the coefficient
  */
 template <bool isAr, typename DataT>
-static inline __host__ __device__ DataT
-reduced_polynomial(int bid, const DataT* param, int lags, const DataT* sparam,
-                   int slags, int s, int idx) {
+HDI DataT reduced_polynomial(int bid, const DataT* param, int lags,
+                             const DataT* sparam, int slags, int s, int idx) {
   int idx1 = s ? idx / s : 0;
   int idx0 = idx - s * idx1;
   DataT coef0 = _param_to_poly<isAr>(param + bid * lags, lags, idx0);
   DataT coef1 = _param_to_poly<isAr>(sparam + bid * slags, slags, idx1);
   return isAr ? -coef0 * coef1 : coef0 * coef1;
+}
+
+/**
+ * @brief Prepare data by differencing if needed (simple and/or seasonal)
+ *        and removing a trend if needed
+ *
+ * @note: It is assumed that d + D <= 2. This is enforced on the Python side
+ *
+ * @param[out] d_out       Output. Shape (n_obs - d - D*s, batch_size) (device)
+ * @param[in]  d_in        Input. Shape (n_obs, batch_size) (device)
+ * @param[in]  batch_size  Number of series per batch
+ * @param[in]  n_obs       Number of observations per series
+ * @param[in]  d           Order of simple differences (0, 1 or 2)
+ * @param[in]  D           Order of seasonal differences (0, 1 or 2)
+ * @param[in]  s           Seasonal period if D > 0
+ * @param[in]  stream      CUDA stream
+ * @param[in]  intercept   Whether the model fits an intercept
+ * @param[in]  d_mu        Mu array if intercept > 0
+ *                         Shape (batch_size,) (device)
+ */
+template <typename DataT>
+static void prepare_data(DataT* d_out, const DataT* d_in, int batch_size,
+                         int n_obs, int d, int D, int s, cudaStream_t stream,
+                         int intercept = 0, const DataT* d_mu = nullptr) {
+  // Only one difference (simple or seasonal)
+  if (d + D == 1) {
+    int period = d ? 1 : s;
+    int tpb = (n_obs - period) > 512 ? 256 : 128;  // quick heuristics
+    MLCommon::LinAlg::Batched::
+      batched_diff_kernel<<<batch_size, tpb, 0, stream>>>(d_in, d_out, n_obs,
+                                                          period);
+    CUDA_CHECK(cudaPeekAtLastError());
+  }
+  // Two differences (simple or seasonal or both)
+  else if (d + D == 2) {
+    int period1 = d ? 1 : s;
+    int period2 = d == 2 ? 1 : s;
+    int tpb = (n_obs - period1 - period2) > 512 ? 256 : 128;
+    MLCommon::LinAlg::Batched::
+      batched_second_diff_kernel<<<batch_size, tpb, 0, stream>>>(
+        d_in, d_out, n_obs, period1, period2);
+    CUDA_CHECK(cudaPeekAtLastError());
+  }
+  // If no difference and the pointers are different, copy in to out
+  else if (d + D == 0 && d_in != d_out) {
+    MLCommon::copy(d_out, d_in, n_obs * batch_size, stream);
+  }
+  // Other cases: no difference and the pointers are the same, nothing to do
+
+  // Remove trend in-place
+  if (intercept) {
+    MLCommon::LinAlg::matrixVectorOp(
+      d_out, d_out, d_mu, batch_size, n_obs - d - D * s, false, true,
+      [] __device__(DataT a, DataT b) { return a - b; }, stream);
+  }
 }
 
 /**
@@ -85,8 +138,8 @@ reduced_polynomial(int bid, const DataT* param, int lags, const DataT* sparam,
  *        another and the index is expressed relatively to the second array.
  */
 template <typename DataT>
-static inline __device__ DataT _select_read(const DataT* src0, int size0,
-                                            const DataT* src1, int idx) {
+inline __device__ DataT _select_read(const DataT* src0, int size0,
+                                     const DataT* src1, int idx) {
   return idx < 0 ? src0[size0 + idx] : src1[idx];
 }
 
@@ -96,9 +149,9 @@ static inline __device__ DataT _select_read(const DataT* src0, int size0,
  * @note  One thread per series.
  */
 template <bool double_diff, typename DataT>
-static __global__ void _undiff_kernel(DataT* d_fc, const DataT* d_in,
-                                      int num_steps, int batch_size, int in_ld,
-                                      int n_in, int s0, int s1 = 0) {
+__global__ void _undiff_kernel(DataT* d_fc, const DataT* d_in, int num_steps,
+                               int batch_size, int in_ld, int n_in, int s0,
+                               int s1 = 0) {
   int bid = blockIdx.x * blockDim.x + threadIdx.x;
   if (bid < batch_size) {
     DataT* b_fc = d_fc + bid * num_steps;
@@ -137,10 +190,10 @@ static __global__ void _undiff_kernel(DataT* d_fc, const DataT* d_in,
  *                            Shape (batch_size,) (device)
  */
 template <typename DataT>
-static void finalize_forecast(DataT* d_fc, const DataT* d_in, int num_steps,
-                              int batch_size, int in_ld, int n_in, int d, int D,
-                              int s, cudaStream_t stream, int intercept = 0,
-                              const DataT* d_mu = nullptr) {
+void finalize_forecast(DataT* d_fc, const DataT* d_in, int num_steps,
+                       int batch_size, int in_ld, int n_in, int d, int D, int s,
+                       cudaStream_t stream, int intercept = 0,
+                       const DataT* d_mu = nullptr) {
   // Add the trend in-place
   if (intercept) {
     MLCommon::LinAlg::matrixVectorOp(
@@ -238,28 +291,36 @@ void _transform_helper(const DataT* d_param, DataT* d_Tparam, int k,
 }
 
 /**
- * @todo: docs
+ * Convenience function for batched "jones transform" used in ARIMA to ensure
+ * certain properties of the AR and MA parameters
+ *
+ * @tparam     DataT      Scalar type
+ * @param[in]  order      ARIMA hyper-parameters
+ * @param[in]  batch_size Number of time series analyzed.
+ * @param[in]  isInv      Do the inverse transform?
+ * @param[in]  params     ARIMA parameters (device)
+ * @param[in]  Tparams    Transformed ARIMA parameters (device)
+ * @param[in]  allocator  Device memory allocator
+ * @param[in]  stream     CUDA stream
  */
 template <typename DataT>
-void batched_jones_transform(ML::ARIMAOrder order, int batch_size, bool isInv,
-                             const DataT* d_ar, const DataT* d_ma,
-                             const DataT* d_sar, const DataT* d_sma,
-                             DataT* d_Tar, DataT* d_Tma, DataT* d_Tsar,
-                             DataT* d_Tsma,
+void batched_jones_transform(const ML::ARIMAOrder& order, int batch_size,
+                             bool isInv, const ML::ARIMAParams<DataT>& params,
+                             const ML::ARIMAParams<DataT>& Tparams,
                              std::shared_ptr<deviceAllocator> allocator,
                              cudaStream_t stream) {
   if (order.p)
-    _transform_helper(d_ar, d_Tar, order.p, batch_size, isInv, true, allocator,
-                      stream);
+    _transform_helper(params.ar, Tparams.ar, order.p, batch_size, isInv, true,
+                      allocator, stream);
   if (order.q)
-    _transform_helper(d_ma, d_Tma, order.q, batch_size, isInv, false, allocator,
-                      stream);
+    _transform_helper(params.ma, Tparams.ma, order.q, batch_size, isInv, false,
+                      allocator, stream);
   if (order.P)
-    _transform_helper(d_sar, d_Tsar, order.P, batch_size, isInv, true,
+    _transform_helper(params.sar, Tparams.sar, order.P, batch_size, isInv, true,
                       allocator, stream);
   if (order.Q)
-    _transform_helper(d_sma, d_Tsma, order.Q, batch_size, isInv, false,
-                      allocator, stream);
+    _transform_helper(params.sma, Tparams.sma, order.Q, batch_size, isInv,
+                      false, allocator, stream);
 }
 
 }  // namespace TimeSeries

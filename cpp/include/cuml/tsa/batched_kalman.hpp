@@ -35,35 +35,21 @@ namespace ML {
  * @param[out] loglike_b     Resulting loglikelihood (for each series)
  * @param[out] d_vs          Residual between the prediction and the
  *                           original series.
- *                           shape=(nobs, batch_size) (device)
+ *                           shape=(nobs-d-s*D, batch_size) (device)
  * @param[in]  host_loglike  Whether loglike is a host pointer
  * @param[in]  fc_steps      Number of steps to forecast
  * @param[in]  d_fc          Array to store the forecast
  */
 void batched_kalman_filter(cumlHandle& handle, const double* d_ys_b, int nobs,
-                           const ARIMAParamsD params, ARIMAOrder order,
-                           int batch_size, double* loglike, double* d_vs,
+                           const ARIMAParams<double>& params,
+                           const ARIMAOrder& order, int batch_size,
+                           double* loglike, double* d_vs,
                            bool host_loglike = true, int fc_steps = 0,
                            double* d_fc = nullptr);
 
 /**
- * Public interface to batched "jones transform" used in ARIMA to ensure
- * certain properties of the AR and MA parameters.
- *
- * @param[in]  handle     cuML handle
- * @param[in]  order      ARIMA hyper-parameters
- * @param[in]  batch_size Number of time series analyzed.
- * @param[in]  isInv      Do the inverse transform?
- * @param[in]  params     ARIMA parameters (device)
- * @param[in]  Tparams    Transformed ARIMA parameters (device)
- */
-void batched_jones_transform(cumlHandle& handle, ARIMAOrder order,
-                             int batch_size, bool isInv,
-                             const ARIMAParamsD params, ARIMAParamsD Tparams);
-
-/**
  * Convenience function for batched "jones transform" used in ARIMA to ensure
- * certain properties of the AR and MA parameters. (takes host array and
+ * certain properties of the AR and MA parameters (takes host array and
  * returns host array)
  *
  * @param[in]  handle     cuML handle
@@ -75,7 +61,7 @@ void batched_jones_transform(cumlHandle& handle, ARIMAOrder order,
  *                        (expects pre-allocated array of size
  *                         (p+q)*batch_size) (host)
  */
-void batched_jones_transform(cumlHandle& handle, ARIMAOrder order,
+void batched_jones_transform(cumlHandle& handle, const ARIMAOrder& order,
                              int batch_size, bool isInv, const double* h_params,
                              double* h_Tparams);
 }  // namespace ML
