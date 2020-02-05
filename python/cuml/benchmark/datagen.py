@@ -78,16 +78,17 @@ def _gen_data_blobs(n_samples, n_features, random_state=42, centers=None):
     )
 
 
-def _gen_data_arima(n_samples, n_features, random_state=42, order=(1, 1, 1),
-                    seasonal_order=(0, 0, 0, 0), fit_intercept=False):
+def _gen_data_arima(n_samples, n_features, random_state=42,
+                    order=(1, 1, 1, 0, 0, 0, 0, 0)):
+    p, d, q, P, D, Q, s, k = order
+    print(order)
     if n_samples == 0:
         n_samples = 100
     if n_features == 0:
         n_features = 10000
-    X_arr = make_arima(batch_size=n_features, n_obs=n_samples, order=order,
-                       seasonal_order= seasonal_order,
-                       fit_intercept=fit_intercept, random_state=random_state,
-                       dtype='double')
+    X_arr = make_arima(batch_size=n_features, n_obs=n_samples, order=(p, d, q),
+                       seasonal_order=(P, D, Q, s), fit_intercept=k,
+                       random_state=random_state, dtype='double')
     return (
         pd.DataFrame(X_arr.copy_to_host()),
         None
@@ -252,6 +253,20 @@ _data_converters = {
     'gpuarray': _convert_to_gpuarray,
     'gpuarray-c': _convert_to_gpuarray_c,
 }
+
+_dataset_params = {
+    'arima': 'order',
+}
+
+def get_dataset_params(dataset_name, param_overrides):
+    params = {}
+    for name, val in param_overrides.items():
+        if dataset_name in _dataset_params \
+           and name in _dataset_params[dataset_name]:
+            if isinstance(val, list):
+                val = tuple(val)  # need hashable type
+            params[name] = val
+    return params
 
 
 def all_datasets():

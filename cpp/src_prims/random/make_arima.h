@@ -123,9 +123,9 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
   ar_vec.resize(batch_size * p_sP, stream);
   ma_vec.resize(batch_size * q_sQ, stream);
   DataT* d_ar_vec = ar_vec.data();
-  DataT* d_ma_vec = ar_vec.data();
-  DataT *d_ar = params.ar, *d_ma = params.ar, *d_sar = params.ar,
-        *d_sma = params.ar;
+  DataT* d_ma_vec = ma_vec.data();
+  DataT *d_ar = params.ar, *d_ma = params.ma, *d_sar = params.sar,
+        *d_sma = params.sma;
   if (p_sP) {
     thrust::for_each(thrust::cuda::par.on(stream), counting,
                      counting + batch_size, [=] __device__(int ib) {

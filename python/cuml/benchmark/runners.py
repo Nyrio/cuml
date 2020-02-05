@@ -73,7 +73,8 @@ class SpeedupComparisonRunner:
         verbose=False,
     ):
         data = datagen.gen_data(
-            self.dataset_name, self.input_type, n_samples, n_features
+            self.dataset_name, self.input_type, n_samples, n_features,
+            **datagen.get_dataset_params(self.dataset_name, param_overrides),
         )
 
         setup_overrides = algo_pair.setup_cuml(
@@ -191,6 +192,7 @@ class AccuracyComparisonRunner(SpeedupComparisonRunner):
             n_samples,
             n_features,
             test_fraction=self.test_fraction,
+            **datagen.get_dataset_params(self.dataset_name, param_overrides),
         )
 
         setup_override = algo_pair.setup_cuml(
