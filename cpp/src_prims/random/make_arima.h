@@ -189,7 +189,7 @@ void make_arima(DataT* out, int batch_size, int n_obs, ML::ARIMAOrder order,
                            yi += b_ar_vec[ip] * b_diff[i - 1 - ip];
                        }
                        // MA component
-                       for (int iq = 0; iq < p_sP; iq++) {
+                       for (int iq = 0; iq < q_sQ; iq++) {
                          if (i - 1 - iq >= 0)
                            yi += b_ma_vec[iq] * b_res[i - 1 - iq];
                        }
