@@ -42,7 +42,7 @@ def predict(m, x):
 
 
 def fit_time_series(m, x):
-    m.fit()
+    m.fit(maxiter=50)
 
 
 def _training_data_to_numpy(X, y):
@@ -153,7 +153,7 @@ class StatsmodelsSARIMAXWrapper:
                                               seasonal_order=seasonal_order,
                                               trend=trend))
 
-    def fit(self):
+    def fit(self, maxiter):
         from statsmodels.tools.sm_exceptions import ConvergenceWarning
         self.res = []
         conv_warnings = 0
@@ -162,7 +162,7 @@ class StatsmodelsSARIMAXWrapper:
             warnings.simplefilter("error", category=ConvergenceWarning)
             for model in self.models:
                 try:
-                    self.res.append(model.fit(disp=0))
+                    self.res.append(model.fit(disp=0, maxiter=maxiter))
                 except ConvergenceWarning as e:
                     conv_warnings += 1
         if conv_warnings:
