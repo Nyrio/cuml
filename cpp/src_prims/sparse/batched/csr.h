@@ -416,6 +416,73 @@ __global__ void batched_spmm_kernel(T alpha, const int* A_col_index,
 }
 
 /**
+ * Kernel to compute a batched SpMM: alpha*A*B + beta*C
+ * (where A is a sparse matrix, B and C dense matrices)
+ * 
+ * @note: this is more performant when the matrices are large enough and
+ *        assuming that almost all elements of B need to be read
+ * 
+ * @param[in]     alpha           Scalar alpha
+ * @param[in]     A_col_index     CSR column index of batched matrix A
+ * @param[in]     A_row_index     CSR row index of batched matrix A
+ * @param[in]     A_values        Values of the non-zero elements of A
+ * @param[in]     B               Dense matrix B
+ * @param[in]     beta            Scalar beta
+ * @param[in,out] C               Dense matrix C
+ * @param[in]     m               Number of rows of A and C
+ * @param[in]     k               Number of columns of A, rows of B
+ * @param[in]     n               Number of columns of B and C
+ * @param[in]     nnz             Number of non-zero elements per matrix
+ */
+template <typename T>
+__global__ void batched_spmm_kernel_shared_mem(T alpha, const int* A_col_index,
+                                               const int* A_row_index,
+                                               const T* A_values, const T* B,
+                                               T beta, T* C, int m, int k,
+                                               int n, int nnz) {
+  int bid = blockIdx.x;
+  int j = threadIdx.x;
+
+  // Using dynamic shared memory
+  extern __shared__ int8_t shared_mem[];
+  // Mapping arrays to shared mem ; note: T before int for alignment!
+  T* s_A_values = (T*)shared_mem;
+  T* s_B = (T*)(shared_mem + nnz * sizeof(T));
+  int* s_A_col_index = (int*)(shared_mem + (nnz + k * n) * sizeof(T));
+  int* s_A_row_index =
+    (int*)(shared_mem + (nnz + k * n) * sizeof(T) + nnz * sizeof(int));
+
+  // Load A in shared memory
+  const T* b_A_values = A_values + bid * nnz;
+  for (int i_nnz = j; i_nnz < nnz; i_nnz += blockDim.x) {
+    s_A_col_index[i_nnz] = A_col_index[i_nnz];
+    s_A_values[i_nnz] = b_A_values[i_nnz];
+  }
+  for (int i_m = j; i_m < m; i_m += blockDim.x) {
+    s_A_row_index[i_m] = A_row_index[i_m];
+  }
+  if (j == 0) s_A_row_index[m] = nnz;
+
+  // Load B in shared memory
+  const T* b_B = B + bid * k * n;
+  for (int i_kn = j; i_kn < k * n; i_kn += blockDim.x) {
+    s_B[i_kn] = b_B[i_kn];
+  }
+
+  __syncthreads();
+
+  for (int i = 0; i < m; i++) {
+    T acc = 0.0;
+    for (int idx = s_A_row_index[i]; idx < s_A_row_index[i + 1]; idx++) {
+      int ik = s_A_col_index[idx];
+      acc += s_A_values[idx] * s_B[j * k + ik];
+    }
+    int ci = bid * m * n + j * m + i;
+    C[ci] = alpha * acc + (beta == 0.0 ? 0.0 : beta * C[ci]);
+  }
+}
+
+/**
  * Compute a batched SpMM: alpha*A*B + beta*C
  * (where A is a sparse matrix, B and C dense matrices)
  * 
@@ -430,11 +497,12 @@ __global__ void batched_spmm_kernel(T alpha, const int* A_col_index,
  */
 template <typename T>
 void b_spmm(T alpha, const CSR<T>& A, const LinAlg::Batched::Matrix<T>& B,
-            T beta, LinAlg::Batched::Matrix<T>& C) {
+            T beta, LinAlg::Batched::Matrix<T>& C, bool use_shared_mem = true) {
   int m = A.shape().first;
   int n = B.shape().second;
   int k = A.shape().second;
   int nb = A.batches();
+  int nnz = A.nnz();
   // Check the parameters
   ASSERT(B.batches() == nb, "SpMM: A and B must have the same batch size");
   ASSERT(C.batches() == nb, "SpMM: A and C must have the same batch size");
@@ -443,14 +511,23 @@ void b_spmm(T alpha, const CSR<T>& A, const LinAlg::Batched::Matrix<T>& B,
          "SpMM: Dimension mismatch: C");
 
   // Execute the kernel
-  constexpr int TPB = 256;
-  int threads_per_bid =
-    nb <= 1024 ? 8 : (nb <= 2048 ? 4 : (nb <= 4096 ? 2 : 1));
-  batched_spmm_kernel<<<MLCommon::ceildiv<int>(nb * threads_per_bid, TPB), TPB,
-                        0, A.stream()>>>(
-    alpha, A.get_col_index(), A.get_row_index(), A.get_values(), B.raw_data(),
-    beta, C.raw_data(), m, k, n, nb, threads_per_bid);
-  CUDA_CHECK(cudaPeekAtLastError());
+  if (use_shared_mem) {  // Shared memory kernel (large matrices)
+    size_t shared_mem_size =
+      (nnz + m + 1) * sizeof(int) + (nnz + k * n) * sizeof(T);
+    batched_spmm_kernel_shared_mem<<<nb, n, shared_mem_size, A.stream()>>>(
+      alpha, A.get_col_index(), A.get_row_index(), A.get_values(), B.raw_data(),
+      beta, C.raw_data(), m, k, n, nnz);
+    CUDA_CHECK(cudaPeekAtLastError());
+  } else {  // No shared memory (small matrices)
+    constexpr int TPB = 256;
+    int threads_per_bid =
+      nb <= 1024 ? 8 : (nb <= 2048 ? 4 : (nb <= 4096 ? 2 : 1));
+    batched_spmm_kernel<<<MLCommon::ceildiv<int>(nb * threads_per_bid, TPB),
+                          TPB, 0, A.stream()>>>(
+      alpha, A.get_col_index(), A.get_row_index(), A.get_values(), B.raw_data(),
+      beta, C.raw_data(), m, k, n, nb, threads_per_bid);
+    CUDA_CHECK(cudaPeekAtLastError());
+  }
 }
 
 /**
