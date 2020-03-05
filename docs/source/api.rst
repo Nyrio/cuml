@@ -2,6 +2,14 @@
 cuML API Reference
 ~~~~~~~~~~~~~~~~~~~
 
+Module Behavior Configuration
+==============================
+
+Output Type
+-----------
+
+ .. automethod:: cuml.memory_utils.set_global_output_type
+ .. automethod:: cuml.memory_utils.using_output_type
 
 
 Preprocessing, Metrics, and Utilities
@@ -227,7 +235,7 @@ Nearest Neighbors Classification
 .. autoclass:: cuml.neighbors.KNeighborsClassifier
     :members:
 
-Nearest Neighbors Classification
+Nearest Neighbors Regression
 --------------------------------
 
 .. autoclass:: cuml.neighbors.KNeighborsRegressor
@@ -240,12 +248,6 @@ HoltWinters
 -------------
 
 .. autoclass:: cuml.ExponentialSmoothing
-    :members:
-
-Kalman Filter
--------------
-
-.. autoclass:: cuml.KalmanFilter
     :members:
 
 ARIMA
