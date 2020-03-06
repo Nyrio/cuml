@@ -1682,7 +1682,7 @@ Matrix<T> b_lyapunov(const Matrix<T>& A, Matrix<T>& Q) {
   int n2 = n * n;
   auto counting = thrust::make_counting_iterator(0);
 
-  if (n <= 4 || (n <= 8 && batch_size <= 32)) {
+  if (n <= 4 || (n <= 6 && batch_size <= 96)) {
     //
     // Use direct solution with Kronecker product
     //
