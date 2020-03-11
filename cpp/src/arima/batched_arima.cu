@@ -26,6 +26,7 @@
 #include <cuml/tsa/batched_arima.hpp>
 #include <cuml/tsa/batched_kalman.hpp>
 
+#include "common/allocatorAdapter.hpp"
 #include "common/cumlHandle.hpp"
 #include "common/nvtx.hpp"
 #include "cuda_utils.h"
@@ -43,6 +44,10 @@ void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
   ML::PUSH_RANGE(__func__);
   auto allocator = handle.getDeviceAllocator();
   const auto stream = handle.getStream();
+
+  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  auto execution_policy = thrust::cuda::par(alloc).on(stream);
+  auto counting = thrust::make_counting_iterator(0);
 
   // Prepare data
   int diff_obs = order.lost_in_diff();
@@ -70,7 +75,6 @@ void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
                   order_after_prep, params, loglike.data(), d_vs, false, true,
                   num_steps, d_y_fc);
 
-  auto counting = thrust::make_counting_iterator(0);
   int predict_ld = end - start;
 
   //
@@ -83,8 +87,8 @@ void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
   // The prediction loop starts by filling undefined predictions with NaN,
   // then computes the predictions from the observations and residuals
   if (start < n_obs) {
-    thrust::for_each(thrust::cuda::par.on(stream), counting,
-                     counting + batch_size, [=] __device__(int bid) {
+    thrust::for_each(execution_policy, counting, counting + batch_size,
+                     [=] __device__(int bid) {
                        d_y_p[0] = 0.0;
                        for (int i = 0; i < diff_obs - start; i++) {
                          d_y_p[bid * predict_ld + i] = nan("");
@@ -108,8 +112,8 @@ void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
       order.s, stream, order.k, params.mu);
 
     // Copy forecast in d_y_p
-    thrust::for_each(thrust::cuda::par.on(stream), counting,
-                     counting + batch_size, [=] __device__(int bid) {
+    thrust::for_each(execution_policy, counting, counting + batch_size,
+                     [=] __device__(int bid) {
                        for (int i = 0; i < num_steps; i++) {
                          d_y_p[bid * predict_ld + n_obs - start + i] =
                            d_y_fc[num_steps * bid + i];
@@ -239,6 +243,10 @@ static void _arma_least_squares(
   auto cublas_handle = handle_impl.getCublasHandle();
   auto allocator = handle_impl.getDeviceAllocator();
 
+  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  auto execution_policy = thrust::cuda::par(alloc).on(stream);
+  auto counting = thrust::make_counting_iterator(0);
+
   int batch_size = bm_y.batches();
   int n_obs = bm_y.shape().first;
 
@@ -297,11 +305,10 @@ static void _arma_least_squares(
   }
 
   // Fill the first column of the matrix with 1 if we fit an intercept
-  auto counting = thrust::make_counting_iterator(0);
   if (k) {
     double* d_ls_ar_res = bm_ls_ar_res.raw_data();
-    thrust::for_each(thrust::cuda::par.on(stream), counting,
-                     counting + batch_size, [=] __device__(int bid) {
+    thrust::for_each(execution_policy, counting, counting + batch_size,
+                     [=] __device__(int bid) {
                        double* b_ls_ar_res =
                          d_ls_ar_res + bid * (n_obs - r) * (p + q + k);
                        for (int i = 0; i < n_obs - r; i++) {
@@ -332,8 +339,8 @@ static void _arma_least_squares(
 
   // Copy the results in the parameter vectors
   const double* d_arma_fit = bm_arma_fit.raw_data();
-  thrust::for_each(thrust::cuda::par.on(stream), counting,
-                   counting + batch_size, [=] __device__(int bid) {
+  thrust::for_each(execution_policy, counting, counting + batch_size,
+                   [=] __device__(int bid) {
                      const double* b_arma_fit = d_arma_fit + bid * (n_obs - r);
                      if (k) {
                        d_mu[bid] = b_arma_fit[0];
@@ -360,8 +367,8 @@ static void _arma_least_squares(
 
     // Compute variance
     double* d_residual = bm_final_residual.raw_data();
-    thrust::for_each(thrust::cuda::par.on(stream), counting,
-                     counting + batch_size, [=] __device__(int bid) {
+    thrust::for_each(execution_policy, counting, counting + batch_size,
+                     [=] __device__(int bid) {
                        double acc = 0.0;
                        const double* b_residual =
                          d_residual + (n_obs - r) * bid;

@@ -24,6 +24,7 @@
 #include <cuml/cuml.hpp>
 #include <cuml/tsa/batched_kalman.hpp>
 
+#include "common/allocatorAdapter.hpp"
 #include "common/cumlHandle.hpp"
 #include "common/nvtx.hpp"
 #include "cuda_utils.h"
@@ -218,6 +219,10 @@ void _batched_kalman_loop_large(
   int nb = T.batches();
   int r2 = r * r;
 
+  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  auto execution_policy = thrust::cuda::par(alloc).on(stream);
+  auto counting = thrust::make_counting_iterator(0);
+
   // Temporary matrices and vectors
   MLCommon::LinAlg::Batched::Matrix<double> v_tmp(r, 1, nb, cublasHandle,
                                                   allocator, stream, false);
@@ -238,17 +243,15 @@ void _batched_kalman_loop_large(
 
   CUDA_CHECK(cudaMemsetAsync(d_sum_logFs, 0, sizeof(double) * nb, stream));
 
-  auto counting = thrust::make_counting_iterator(0);
   for (int it = 0; it < nobs; it++) {
     // 1. & 2.
-    thrust::for_each(thrust::cuda::par.on(stream), counting, counting + nb,
-                     [=] __device__(int bid) {
-                       d_vs[bid * nobs + it] =
-                         d_ys[bid * nobs + it] - d_alpha[bid * r];
-                       double l_P = d_P[bid * r2];
-                       d_Fs[bid * nobs + it] = l_P;
-                       d_sum_logFs[bid] += log(l_P);
-                     });
+    thrust::for_each(
+      execution_policy, counting, counting + nb, [=] __device__(int bid) {
+        d_vs[bid * nobs + it] = d_ys[bid * nobs + it] - d_alpha[bid * r];
+        double l_P = d_P[bid * r2];
+        d_Fs[bid * nobs + it] = l_P;
+        d_sum_logFs[bid] += log(l_P);
+      });
 
     // 3. K = 1/Fs[it] * T*P*Z'
     // TP = T*P (also used later)
@@ -258,7 +261,7 @@ void _batched_kalman_loop_large(
       MLCommon::LinAlg::Batched::b_gemm(false, false, r, r, r, 1.0, T, P, 0.0,
                                         TP);
     // K = 1/Fs[it] * TP*Z' ; optimized for Z = (1 0 ... 0)
-    thrust::for_each(thrust::cuda::par.on(stream), counting, counting + nb,
+    thrust::for_each(execution_policy, counting, counting + nb,
                      [=] __device__(int bid) {
                        double _1_Fs = 1.0 / d_Fs[bid * nobs + it];
                        for (int i = 0; i < r; i++) {
@@ -270,21 +273,20 @@ void _batched_kalman_loop_large(
     // v_tmp = T*alpha
     MLCommon::Sparse::Batched::b_spmv(1.0, T_sparse, alpha, 0.0, v_tmp);
     // alpha = v_tmp + K*vs[it]
-    thrust::for_each(thrust::cuda::par.on(stream), counting, counting + nb,
-                     [=] __device__(int bid) {
-                       double _vs = d_vs[bid * nobs + it];
-                       for (int i = 0; i < r; i++) {
-                         d_alpha[bid * r + i] =
-                           d_v_tmp[bid * r + i] + _vs * d_K[bid * r + i];
-                       }
-                     });
+    thrust::for_each(
+      execution_policy, counting, counting + nb, [=] __device__(int bid) {
+        double _vs = d_vs[bid * nobs + it];
+        for (int i = 0; i < r; i++) {
+          d_alpha[bid * r + i] = d_v_tmp[bid * r + i] + _vs * d_K[bid * r + i];
+        }
+      });
 
     // 5. L = T - K * Z
     // L = T (L is m_tmp)
     MLCommon::copy(m_tmp.raw_data(), T.raw_data(), nb * r2, stream);
     // L = L - K * Z ; optimized for Z = (1 0 ... 0):
     // substract K to the first column of L
-    thrust::for_each(thrust::cuda::par.on(stream), counting, counting + nb,
+    thrust::for_each(execution_policy, counting, counting + nb,
                      [=] __device__(int bid) {
                        for (int i = 0; i < r; i++) {
                          d_m_tmp[bid * r2 + i] -= d_K[bid * r + i];
@@ -306,7 +308,7 @@ void _batched_kalman_loop_large(
   // Forecast
   for (int i = 0; i < fc_steps; i++) {
     thrust::for_each(
-      thrust::cuda::par.on(stream), counting, counting + nb,
+      execution_policy, counting, counting + nb,
       [=] __device__(int bid) { d_fc[bid * fc_steps + i] = d_alpha[bid * r]; });
 
     MLCommon::Sparse::Batched::b_spmv(1.0, T_sparse, alpha, 0.0, v_tmp);
@@ -445,14 +447,16 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
   auto cublasHandle = handle.getImpl().getCublasHandle();
   auto allocator = handle.getDeviceAllocator();
 
+  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  auto execution_policy = thrust::cuda::par(alloc).on(stream);
   auto counting = thrust::make_counting_iterator(0);
 
   MLCommon::LinAlg::Batched::Matrix<double> RQb(r, 1, batch_size, cublasHandle,
                                                 allocator, stream, true);
   double* d_RQ = RQb.raw_data();
   const double* d_R = Rb.raw_data();
-  thrust::for_each(thrust::cuda::par.on(stream), counting,
-                   counting + batch_size, [=] __device__(int bid) {
+  thrust::for_each(execution_policy, counting, counting + batch_size,
+                   [=] __device__(int bid) {
                      double sigma2 = d_sigma2[bid];
                      for (int i = 0; i < r; i++) {
                        d_RQ[bid * r + i] = d_R[bid * r + i] * sigma2;
@@ -506,6 +510,7 @@ static void init_batched_kalman_matrices(
   ML::PUSH_RANGE(__func__);
 
   auto stream = handle.getStream();
+  auto allocator = handle.getDeviceAllocator();
 
   // Note: Z is unused yet but kept to avoid reintroducing it later when
   // adding support for exogeneous variables
@@ -513,44 +518,46 @@ static void init_batched_kalman_matrices(
   cudaMemsetAsync(d_R_b, 0.0, r * nb * sizeof(double), stream);
   cudaMemsetAsync(d_T_b, 0.0, r * r * nb * sizeof(double), stream);
 
+  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  auto execution_policy = thrust::cuda::par(alloc).on(stream);
   auto counting = thrust::make_counting_iterator(0);
-  thrust::for_each(thrust::cuda::par.on(stream), counting, counting + nb,
-                   [=] __device__(int bid) {
-                     // See TSA pg. 54 for Z,R,T matrices
-                     // Z = [1 0 0 0 ... 0]
-                     d_Z_b[bid * r] = 1.0;
 
-                     //     |1.0        |
-                     // R = |theta_1    |
-                     //     | ...       |
-                     //     |theta_{r-1}|
-                     //
-                     d_R_b[bid * r] = 1.0;
-                     for (int i = 0; i < r - 1; i++) {
-                       d_R_b[bid * r + i + 1] =
-                         MLCommon::TimeSeries::reduced_polynomial<false>(
-                           bid, d_ma, order.q, d_sma, order.Q, order.s, i + 1);
-                     }
+  thrust::for_each(
+    execution_policy, counting, counting + nb, [=] __device__(int bid) {
+      // See TSA pg. 54 for Z,R,T matrices
+      // Z = [1 0 0 0 ... 0]
+      d_Z_b[bid * r] = 1.0;
 
-                     //     |phi_1  1.0  0.0  ...  0.0|
-                     //     | .          1.0          |
-                     //     | .              .        |
-                     // T = | .                .   0.0|
-                     //     | .                  .    |
-                     //     | .                    1.0|
-                     //     |phi_r  0.0  0.0  ...  0.0|
-                     //
-                     double* batch_T = d_T_b + bid * r * r;
-                     for (int i = 0; i < r; i++) {
-                       batch_T[i] =
-                         MLCommon::TimeSeries::reduced_polynomial<true>(
-                           bid, d_ar, order.p, d_sar, order.P, order.s, i + 1);
-                     }
-                     // shifted identity
-                     for (int i = 0; i < r - 1; i++) {
-                       batch_T[(i + 1) * r + i] = 1.0;
-                     }
-                   });
+      //     |1.0        |
+      // R = |theta_1    |
+      //     | ...       |
+      //     |theta_{r-1}|
+      //
+      d_R_b[bid * r] = 1.0;
+      for (int i = 0; i < r - 1; i++) {
+        d_R_b[bid * r + i + 1] =
+          MLCommon::TimeSeries::reduced_polynomial<false>(
+            bid, d_ma, order.q, d_sma, order.Q, order.s, i + 1);
+      }
+
+      //     |phi_1  1.0  0.0  ...  0.0|
+      //     | .          1.0          |
+      //     | .              .        |
+      // T = | .                .   0.0|
+      //     | .                  .    |
+      //     | .                    1.0|
+      //     |phi_r  0.0  0.0  ...  0.0|
+      //
+      double* batch_T = d_T_b + bid * r * r;
+      for (int i = 0; i < r; i++) {
+        batch_T[i] = MLCommon::TimeSeries::reduced_polynomial<true>(
+          bid, d_ar, order.p, d_sar, order.P, order.s, i + 1);
+      }
+      // shifted identity
+      for (int i = 0; i < r - 1; i++) {
+        batch_T[(i + 1) * r + i] = 1.0;
+      }
+    });
 
   T_mask.resize(r * r, false);
   for (int iP = 0; iP < order.P + 1; iP++) {
