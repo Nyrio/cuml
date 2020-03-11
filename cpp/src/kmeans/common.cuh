@@ -199,7 +199,7 @@ Tensor<DataT, 2, IndexT> sampleCentroids(
   CUDA_CHECK(cudaStreamSynchronize(stream));
 
   int *rawPtr_isSampleCentroid = isSampleCentroid.data();
-  ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+  MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   thrust::for_each_n(execution_policy, sampledMinClusterDistance.begin(),
                      nPtsSampledInRank,
@@ -300,7 +300,7 @@ void minClusterAndDistance(
   cub::KeyValuePair<IndexT, DataT> initial_value(
     0, std::numeric_limits<DataT>::max());
 
-  ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+  MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
   auto thrust_exec_policy = thrust::cuda::par(alloc).on(stream);
   thrust::fill(thrust_exec_policy, minClusterAndDistance.begin(),
                minClusterAndDistance.end(), initial_value);
@@ -416,7 +416,7 @@ void minClusterDistance(const cumlHandle_impl &handle,
   Tensor<DataT, 2, IndexT> pairwiseDistance(
     L2NormBuf_OR_DistBuf.data(), {dataBatchSize, centroidsBatchSize});
 
-  ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+  MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
   auto thrust_exec_policy = thrust::cuda::par(alloc).on(stream);
   thrust::fill(thrust_exec_policy, minClusterDistance.begin(),
                minClusterDistance.end(), std::numeric_limits<DataT>::max());
@@ -586,7 +586,7 @@ void kmeansPlusPlus(const cumlHandle_impl &handle, const KMeansParams &params,
   Tensor<DataT, 1, IndexT> prob({n_pot_centroids}, handle.getDeviceAllocator(),
                                 stream);
 
-  ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+  MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   thrust::transform(
     execution_policy, weights.begin(), weights.end(), prob.begin(),
@@ -661,7 +661,7 @@ void kmeansPlusPlus(const cumlHandle_impl &handle, const KMeansParams &params,
 
     cub::ArgIndexInputIterator<int *> itr_w(weights.data());
 
-    ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+    MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
     auto execution_policy = thrust::cuda::par(alloc).on(stream);
     thrust::transform(
       execution_policy, minClusterDistance.begin(), minClusterDistance.end(),

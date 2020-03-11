@@ -46,7 +46,7 @@ void launcher(const ML::cumlHandle_impl &handle, Pack<Type, Index_> data,
   device_ptr<Index_> dev_vd = device_pointer_cast(data.vd);
   device_ptr<Index_> dev_ex_scan = device_pointer_cast(data.ex_scan);
 
-  ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+  MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
   exclusive_scan(thrust::cuda::par(alloc).on(stream), dev_vd,
                  dev_vd + batchSize, dev_ex_scan);
 

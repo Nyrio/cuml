@@ -144,7 +144,7 @@ void fit(const ML::cumlHandle_impl &handle, const KMeansParams &params,
     auto sampleCountInClusterInverse = std::move(
       Tensor<DataT, 1, IndexT>((DataT *)workspace.data(), {n_clusters}));
 
-    ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+    MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
     auto execution_policy = thrust::cuda::par(alloc).on(stream);
     thrust::transform(
       execution_policy, sampleCountInCluster.begin(),
@@ -612,7 +612,7 @@ void predict(const ML::cumlHandle_impl &handle, const KMeansParams &params,
   labelsRawData.resize(n_samples, stream);
 
   auto labels = std::move(Tensor<IndexT, 1>(labelsRawData.data(), {n_samples}));
-  ML::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
+  MLCommon::thrustAllocatorAdapter alloc(handle.getDeviceAllocator(), stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   thrust::transform(
     execution_policy, minClusterAndDistance.begin(),

@@ -120,7 +120,7 @@ void signFlip(math_t *input, int n_rows, int n_cols, math_t *components,
   auto counting = thrust::make_counting_iterator(0);
   auto m = n_rows;
 
-  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  MLCommon::thrustAllocatorAdapter alloc(allocator, stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   thrust::for_each(execution_policy, counting, counting + n_cols,
                    [=] __device__(int idx) {

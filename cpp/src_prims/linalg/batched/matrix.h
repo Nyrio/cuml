@@ -33,6 +33,7 @@
 #include <linalg/binary_op.h>
 #include <linalg/cublas_wrappers.h>
 #include <linalg/unary_op.h>
+#include <common/allocatorAdapter.hpp>
 #include <common/device_buffer.hpp>
 
 namespace MLCommon {
@@ -890,14 +891,19 @@ Matrix<T> b_lyapunov(const Matrix<T>& A, Matrix<T>& Q) {
   int batch_size = A.batches();
   int n = A.shape().first;
   int n2 = n * n;
+  auto stream = A.stream();
+  auto allocator = A.allocator();
+
+  MLCommon::thrustAllocatorAdapter alloc(allocator, stream);
+  auto execution_policy = thrust::cuda::par(alloc).on(stream);
+  auto counting = thrust::make_counting_iterator(0);
 
   Matrix<T> I_m_AxA = b_kron(-A, A);
   // Note: avoiding the creation of an identity matrix to save memory;
   // also -AxA = (-A)xa
   double* d_I_m_AxA = I_m_AxA.raw_data();
-  auto counting = thrust::make_counting_iterator(0);
-  thrust::for_each(thrust::cuda::par.on(A.stream()), counting,
-                   counting + batch_size, [=] __device__(int ib) {
+  thrust::for_each(execution_policy, counting, counting + batch_size,
+                   [=] __device__(int ib) {
                      double* b_I_m_AxA = d_I_m_AxA + ib * n2 * n2;
                      for (int i = 0; i < n * n; i++) {
                        b_I_m_AxA[(n2 + 1) * i] += 1.0;

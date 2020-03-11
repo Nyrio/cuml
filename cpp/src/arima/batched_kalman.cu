@@ -219,7 +219,7 @@ void _batched_kalman_loop_large(
   int nb = T.batches();
   int r2 = r * r;
 
-  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  MLCommon::thrustAllocatorAdapter alloc(allocator, stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   auto counting = thrust::make_counting_iterator(0);
 
@@ -447,7 +447,7 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
   auto cublasHandle = handle.getImpl().getCublasHandle();
   auto allocator = handle.getDeviceAllocator();
 
-  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  MLCommon::thrustAllocatorAdapter alloc(allocator, stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   auto counting = thrust::make_counting_iterator(0);
 
@@ -518,7 +518,7 @@ static void init_batched_kalman_matrices(
   cudaMemsetAsync(d_R_b, 0.0, r * nb * sizeof(double), stream);
   cudaMemsetAsync(d_T_b, 0.0, r * r * nb * sizeof(double), stream);
 
-  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  MLCommon::thrustAllocatorAdapter alloc(allocator, stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   auto counting = thrust::make_counting_iterator(0);
 

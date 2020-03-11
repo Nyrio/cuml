@@ -45,7 +45,7 @@ void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
   auto allocator = handle.getDeviceAllocator();
   const auto stream = handle.getStream();
 
-  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  MLCommon::thrustAllocatorAdapter alloc(allocator, stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   auto counting = thrust::make_counting_iterator(0);
 
@@ -243,7 +243,7 @@ static void _arma_least_squares(
   auto cublas_handle = handle_impl.getCublasHandle();
   auto allocator = handle_impl.getDeviceAllocator();
 
-  ML::thrustAllocatorAdapter alloc(allocator, stream);
+  MLCommon::thrustAllocatorAdapter alloc(allocator, stream);
   auto execution_policy = thrust::cuda::par(alloc).on(stream);
   auto counting = thrust::make_counting_iterator(0);
 

@@ -26,10 +26,7 @@
 // todo: change utils.h in src_prims
 #include "utils.h"
 
-namespace ML {
-
-using MLCommon::deviceAllocator;
-using MLCommon::hostAllocator;
+namespace MLCommon {
 
 template <typename T>
 class stdAllocatorAdapter {
@@ -162,4 +159,4 @@ inline auto thrust_exec_policy(std::shared_ptr<deviceAllocator> allocator,
   return policy;
 }
 
-}  // end namespace ML
+}  // end namespace MLCommon
