@@ -29,6 +29,7 @@
 #include <cuml/tsa/batched_kalman.hpp>
 
 #include <common/cudart_utils.h>
+#include "arima_memory.cuh"
 #include "common/cumlHandle.hpp"
 #include "common/device_buffer.hpp"
 #include "common/nvtx.hpp"
@@ -39,6 +40,10 @@
 #include "timeSeries/arima_helpers.cuh"
 
 namespace ML {
+
+int arima_memory_needed(const ARIMAOrder& order, int n_obs, int batch_size) {
+  return ARIMAMemory<double>::compute_buffer_size(order, n_obs, batch_size);
+}
 
 void batched_diff(cumlHandle& handle, double* d_y_diff, const double* d_y,
                   int batch_size, int n_obs, const ARIMAOrder& order) {

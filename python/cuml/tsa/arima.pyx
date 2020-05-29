@@ -52,8 +52,12 @@ cdef extern from "cuml/tsa/arima_common.h" namespace "ML":
 cdef extern from "cuml/tsa/batched_arima.hpp" namespace "ML":
     ctypedef enum LoglikeMethod: CSS, MLE
 
-    void batched_diff(cumlHandle& handle, double* d_y_diff, const double* d_y,
-                      int batch_size, int n_obs, const ARIMAOrder& order)
+    int arima_memory_needed(
+        const ARIMAOrder& order, int n_obs, int batch_size)
+
+    void batched_diff(
+        cumlHandle& handle, double* d_y_diff, const double* d_y,
+        int batch_size, int n_obs, const ARIMAOrder& order)
 
     void batched_loglike(
         cumlHandle& handle, const double* y, int batch_size, int nobs,
@@ -664,6 +668,12 @@ class ARIMA(Base):
                 logger.warn("fit: Some batch members had optimizer problems")
 
             return x_out, niter
+        
+        # Allocate temporary storage (allows memory reuse)
+        cdef ARIMAOrder order = self.order
+        mem_needed = arima_memory_needed(order, self.n_obs, self.batch_size)
+        temp_mem = cumlArray.empty(mem_needed, dtype=np.float64)
+        print(temp_mem.shape)
 
         if start_params is None:
             self._estimate_x0()
@@ -682,6 +692,10 @@ class ARIMA(Base):
             self.niter = (self.niter + niter) if method == "css-ml" else niter
 
         self.unpack(self._batched_transform(x))
+
+        # Free temporary memory
+        del temp_mem
+
         return self
 
     @nvtx_range_wrap

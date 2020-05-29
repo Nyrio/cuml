@@ -24,6 +24,8 @@
 #include <thrust/for_each.h>
 #include <thrust/iterator/counting_iterator.h>
 
+/// TODO: this file should be renamed as cuh!
+
 namespace ML {
 
 /**

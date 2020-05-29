@@ -24,6 +24,11 @@ namespace ML {
 enum LoglikeMethod { CSS, MLE };
 
 /**
+ * @todo: docs
+ */
+int arima_memory_needed(const ARIMAOrder& order, int n_obs, int batch_size);
+
+/**
  * Compute the differenced series (seasonal and/or non-seasonal differences)
  * 
  * @param[in]  handle     cuML handle
