@@ -16,12 +16,13 @@
 
 #pragma once
 
-#include <cuda_runtime.h>
-#include <cstddef>
-
 #include <cuml/tsa/arima_common.h>
-#include <cuml/common/cuml_allocator.hpp>
-#include <cuml/cuml.hpp>
+
+#define ARRAY_SPEC(name, type, length)     \
+  {                                        \
+    (name) = (type*)(mem_buffer + offset); \
+    offset += (length) * sizeof(type);     \
+  }
 
 namespace ML {
 
@@ -29,31 +30,31 @@ template <typename DataT>
 class ARIMAMemory {
  public:
   // These public attributes are used to access the managed arrays
-  DataT *Z, *T, *P, *R, *RRT;
+  DataT *Z, *T, *P, *R, *RRT, *tmp_r;
+  DataT **Z_members, **T_members, **P_members, **R_members, **RRT_members,
+    **tmp_r_members;
 
   ARIMAMemory(uint8_t* ptr, const ARIMAOrder& order, int n_obs, int batch_size)
-    : mem_buffer(ptr),
-      mem_buffer(mem_buffer),
-      order(order),
-      n_obs(n_obs),
-      batch_size(batch_size) {
+    : mem_buffer(ptr), order(order), n_obs(n_obs), batch_size(batch_size) {
     int r = order.r();
     int r2 = r * r;
 
     int offset = 0;
-  
+
     // Any update here must be reflected in compute_buffer_size!
-    Z = (DataT*)mem_buffer;
-    offset += batch_size * r;
-    T = (DataT*)(mem_buffer + offset);
-    offset += batch_size * r2;
-    P = (DataT*)(mem_buffer + offset);
-    offset += batch_size * r2;
-    R = (DataT*)(mem_buffer + offset);
-    offset += batch_size * r;
-    RRT = (DataT*)(mem_buffer + offset);
-    offset += batch_size * r2;
-  
+    ARRAY_SPEC(Z, DataT, batch_size * r);
+    ARRAY_SPEC(T, DataT, batch_size * r2);
+    ARRAY_SPEC(P, DataT, batch_size * r2);
+    ARRAY_SPEC(R, DataT, batch_size * r);
+    ARRAY_SPEC(RRT, DataT, batch_size * r2);
+    ARRAY_SPEC(tmp_r, DataT, batch_size * r);
+    ARRAY_SPEC(Z_members, DataT*, batch_size);
+    ARRAY_SPEC(T_members, DataT*, batch_size);
+    ARRAY_SPEC(P_members, DataT*, batch_size);
+    ARRAY_SPEC(R_members, DataT*, batch_size);
+    ARRAY_SPEC(RRT_members, DataT*, batch_size);
+    ARRAY_SPEC(tmp_r_members, DataT*, batch_size);
+
     buffer_size = offset;
   }
 
@@ -62,7 +63,8 @@ class ARIMAMemory {
     int r = order.r();
     int r2 = r * r;
 
-    return batch_size * (3 * r2 + 2 * r);
+    return batch_size * (3 * r2 + 3 * r) * sizeof(DataT) +
+           6 * batch_size * sizeof(DataT*);
   }
 
  protected:

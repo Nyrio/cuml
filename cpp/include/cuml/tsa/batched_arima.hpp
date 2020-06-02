@@ -23,6 +23,8 @@ namespace ML {
 
 enum LoglikeMethod { CSS, MLE };
 
+/// TODO: update all documentations with d_temp_mem
+
 /**
  * @todo: docs
  */
@@ -67,10 +69,10 @@ void batched_diff(cumlHandle& handle, double* d_y_diff, const double* d_y,
  */
 void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
                      int n_obs, const ARIMAOrder& order, const double* d_params,
-                     double* loglike, double* d_vs, bool trans = true,
-                     bool host_loglike = true, LoglikeMethod method = MLE,
-                     int truncate = 0, int fc_steps = 0,
-                     double* d_fc = nullptr);
+                     uint8_t* d_temp_mem, double* loglike, double* d_vs,
+                     bool trans = true, bool host_loglike = true,
+                     LoglikeMethod method = MLE, int truncate = 0,
+                     int fc_steps = 0, double* d_fc = nullptr);
 
 /**
  * Compute the loglikelihood of the given parameter on the given time series
@@ -100,10 +102,11 @@ void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
  */
 void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
                      int n_obs, const ARIMAOrder& order,
-                     const ARIMAParams<double>& params, double* loglike,
-                     double* d_vs, bool trans = true, bool host_loglike = true,
-                     LoglikeMethod method = MLE, int truncate = 0,
-                     int fc_steps = 0, double* d_fc = nullptr);
+                     const ARIMAParams<double>& params, uint8_t* d_temp_mem,
+                     double* loglike, double* d_vs, bool trans = true,
+                     bool host_loglike = true, LoglikeMethod method = MLE,
+                     int truncate = 0, int fc_steps = 0,
+                     double* d_fc = nullptr);
 
 /**
  * Compute the gradient of the log-likelihood
@@ -124,8 +127,9 @@ void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
  */
 void batched_loglike_grad(cumlHandle& handle, const double* d_y, int batch_size,
                           int n_obs, const ARIMAOrder& order, const double* d_x,
-                          double* d_grad, double h, bool trans = true,
-                          LoglikeMethod method = MLE, int truncate = 0);
+                          uint8_t* d_temp_mem, double* d_grad, double h,
+                          bool trans = true, LoglikeMethod method = MLE,
+                          int truncate = 0);
 
 /**
  * Batched in-sample and out-of-sample prediction of a time-series given all
@@ -146,7 +150,8 @@ void batched_loglike_grad(cumlHandle& handle, const double* d_y, int batch_size,
  */
 void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
              int start, int end, const ARIMAOrder& order,
-             const ARIMAParams<double>& params, double* d_vs, double* d_y_p);
+             const ARIMAParams<double>& params, uint8_t* d_temp_mem,
+             double* d_vs, double* d_y_p);
 
 /**
  * Compute an information criterion (AIC, AICc, BIC)
@@ -166,8 +171,8 @@ void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
  */
 void information_criterion(cumlHandle& handle, const double* d_y,
                            int batch_size, int n_obs, const ARIMAOrder& order,
-                           const ARIMAParams<double>& params, double* ic,
-                           int ic_type);
+                           const ARIMAParams<double>& params,
+                           uint8_t* d_temp_mem, double* ic, int ic_type);
 
 /**
  * Provide initial estimates to ARIMA parameters mu, AR, and MA

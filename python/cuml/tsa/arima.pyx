@@ -23,7 +23,7 @@ import numpy as np
 import sys
 
 import ctypes
-from libc.stdint cimport uintptr_t
+from libc.stdint cimport uintptr_t, uint8_t
 from libcpp cimport bool
 from libcpp.vector cimport vector
 from typing import List, Tuple, Dict, Mapping, Optional, Union
@@ -61,24 +61,26 @@ cdef extern from "cuml/tsa/batched_arima.hpp" namespace "ML":
 
     void batched_loglike(
         cumlHandle& handle, const double* y, int batch_size, int nobs,
-        const ARIMAOrder& order, const double* params, double* loglike,
-        double* d_vs, bool trans, bool host_loglike, LoglikeMethod method,
-        int truncate)
+        const ARIMAOrder& order, const double* params, uint8_t* d_temp_mem,
+        double* loglike, double* d_vs, bool trans, bool host_loglike,
+        LoglikeMethod method, int truncate)
 
     void batched_loglike_grad(
         cumlHandle& handle, const double* d_y, int batch_size, int nobs,
-        const ARIMAOrder& order, const double* d_x, double* d_grad, double h,
-        bool trans, LoglikeMethod method, int truncate)
+        const ARIMAOrder& order, const double* d_x, uint8_t* d_temp_mem,
+        double* d_grad, double h, bool trans, LoglikeMethod method,
+        int truncate)
 
     void cpp_predict "predict" (
         cumlHandle& handle, const double* d_y, int batch_size, int nobs,
         int start, int end, const ARIMAOrder& order,
-        const ARIMAParams[double]& params, double* d_vs_ptr, double* d_y_p)
+        const ARIMAParams[double]& params, uint8_t* d_temp_mem,
+        double* d_vs_ptr, double* d_y_p)
 
     void information_criterion(
         cumlHandle& handle, const double* d_y, int batch_size, int nobs,
         const ARIMAOrder& order, const ARIMAParams[double]& params,
-        double* ic, int ic_type)
+        uint8_t* d_temp_mem, double* ic, int ic_type)
 
     void estimate_x0(
         cumlHandle& handle, ARIMAParams[double]& params, const double* d_y,
@@ -289,6 +291,20 @@ class ARIMA(Base):
         else:
             return "ARIMA({},{},{}) ({}) - {} series".format(
                 order.p, order.d, order.q, intercept_str, self.batch_size)
+    
+    def _get_temporary_memory(self, obj=None):
+        """Used to allocate device memory for the algorithm's needs.
+        Takes either a cuML array or None, and returns a cuML array
+        """
+        cdef ARIMAOrder order
+        if obj is None:
+            order = self.order
+            mem_needed = arima_memory_needed(order, self.n_obs,
+                                             self.batch_size)
+            temp_mem = cumlArray.empty(mem_needed, dtype=np.uint8)
+            return temp_mem
+        else:
+            return obj
 
     @nvtx_range_wrap
     def _ic(self, ic_type: str):
@@ -335,6 +351,9 @@ class ARIMA(Base):
         cdef uintptr_t d_ic_ptr = ic.ptr
         cdef uintptr_t d_y_ptr = self._d_y.ptr
 
+        temp_mem = self._get_temporary_memory()
+        cdef uintptr_t d_temp_mem = temp_mem.ptr
+
         ic_name_to_number = {"aic": 0, "aicc": 1, "bic": 2}
         cdef int ic_type_id
         try:
@@ -345,7 +364,8 @@ class ARIMA(Base):
         information_criterion(handle_[0], <double*> d_y_ptr,
                               <int> self.batch_size, <int> self.n_obs,
                               <ARIMAOrder> order, cpp_params,
-                              <double*> d_ic_ptr, <int> ic_type_id)
+                              <uint8_t*> d_temp_mem, <double*> d_ic_ptr,
+                              <int> ic_type_id)
 
         return ic.to_output(self.output_type)
 
@@ -499,9 +519,13 @@ class ARIMA(Base):
 
         cdef uintptr_t d_y_ptr = self._d_y.ptr
 
+        temp_mem = self._get_temporary_memory()
+        cdef uintptr_t d_temp_mem = temp_mem.ptr
+
         cpp_predict(handle_[0], <double*>d_y_ptr, <int> self.batch_size,
                     <int> self.n_obs, <int> start, <int> end, order,
-                    cpp_params, <double*>d_vs_ptr, <double*>d_y_p_ptr)
+                    cpp_params, <uint8_t*> d_temp_mem, <double*>d_vs_ptr,
+                    <double*>d_y_p_ptr)
 
         return d_y_p.to_output(self.output_type)
 
@@ -636,6 +660,8 @@ class ARIMA(Base):
             When using CSS, start the sum of squares after a given number of
             observations
         """
+        temp_mem = self._get_temporary_memory()
+
         def fit_helper(x_in, fit_method):
             cdef uintptr_t d_y_ptr = self._d_y.ptr
 
@@ -643,14 +669,15 @@ class ARIMA(Base):
                 """The (batched) energy functional returning the negative
                 log-likelihood (foreach series)."""
                 # Recall: We maximize LL by minimizing -LL
-                n_llf = -self._loglike(x, True, fit_method, truncate)
+                n_llf = -self._loglike(x, True, fit_method, truncate, temp_mem)
                 return n_llf / (self.n_obs - 1)
 
             # Optimized finite differencing gradient for batches
             def gf(x) -> np.ndarray:
                 """The gradient of the (batched) energy functional."""
                 # Recall: We maximize LL by minimizing -LL
-                n_gllf = -self._loglike_grad(x, h, True, fit_method, truncate)
+                n_gllf = -self._loglike_grad(x, h, True, fit_method, truncate,
+                                             temp_mem)
                 return n_gllf / (self.n_obs - 1)
 
             # Check initial parameter sanity
@@ -668,12 +695,6 @@ class ARIMA(Base):
                 logger.warn("fit: Some batch members had optimizer problems")
 
             return x_out, niter
-        
-        # Allocate temporary storage (allows memory reuse)
-        cdef ARIMAOrder order = self.order
-        mem_needed = arima_memory_needed(order, self.n_obs, self.batch_size)
-        temp_mem = cumlArray.empty(mem_needed, dtype=np.float64)
-        print(temp_mem.shape)
 
         if start_params is None:
             self._estimate_x0()
@@ -693,13 +714,10 @@ class ARIMA(Base):
 
         self.unpack(self._batched_transform(x))
 
-        # Free temporary memory
-        del temp_mem
-
         return self
 
     @nvtx_range_wrap
-    def _loglike(self, x, trans=True, method="ml", truncate=0):
+    def _loglike(self, x, trans=True, method="ml", truncate=0, temp_mem=None):
         """Compute the batched log-likelihood for the given parameters.
 
         Parameters:
@@ -715,12 +733,17 @@ class ARIMA(Base):
         truncate : int
             When using CSS, start the sum of squares after a given number of
             observations
+        temp_mem : cumlArray or None
+            Array for the memory used by the algorithm. Created if None
 
         Returns:
         --------
         loglike : numpy.ndarray
             Batched log-likelihood. Shape: (batch_size,)
         """
+        temp_mem = self._get_temporary_memory(temp_mem)
+        cdef uintptr_t d_temp_mem = temp_mem.ptr
+
         cdef vector[double] vec_loglike
         vec_loglike.resize(self.batch_size)
 
@@ -741,14 +764,15 @@ class ARIMA(Base):
         cdef LoglikeMethod ll_method = CSS if method == "css" else MLE
         batched_loglike(handle_[0], <double*> d_y_diff_ptr,
                         <int> self.batch_size, <int> self.n_obs_diff,
-                        order_diff, <double*> d_x_ptr,
+                        order_diff, <double*> d_x_ptr, <uint8_t*> d_temp_mem,
                         <double*> vec_loglike.data(), <double*> d_vs_ptr,
                         <bool> trans, <bool> True, ll_method, <int> truncate)
 
         return np.array(vec_loglike, dtype=np.float64)
 
     @nvtx_range_wrap
-    def _loglike_grad(self, x, h=1e-8, trans=True, method="ml", truncate=0):
+    def _loglike_grad(self, x, h=1e-8, trans=True, method="ml", truncate=0,
+                      temp_mem=None):
         """Compute the gradient (via finite differencing) of the batched
         log-likelihood.
 
@@ -768,6 +792,8 @@ class ARIMA(Base):
         truncate : int
             When using CSS, start the sum of squares after a given number of
             observations
+        temp_mem : cumlArray or None
+            Array for the memory used by the algorithm. Created if None
 
         Returns:
         --------
@@ -777,6 +803,9 @@ class ARIMA(Base):
         """
         N = self.complexity
         assert len(x) == N * self.batch_size
+
+        temp_mem = self._get_temporary_memory(temp_mem)
+        cdef uintptr_t d_temp_mem = temp_mem.ptr
 
         grad = cumlArray.empty(N * self.batch_size, np.float64)
         cdef uintptr_t d_grad = <uintptr_t> grad.ptr
@@ -794,7 +823,8 @@ class ARIMA(Base):
         cdef LoglikeMethod ll_method = CSS if method == "css" else MLE
         batched_loglike_grad(handle_[0], <double*> d_y_diff_ptr,
                              <int> self.batch_size, <int> self.n_obs_diff,
-                             order_diff, <double*> d_x_ptr, <double*> d_grad,
+                             order_diff, <double*> d_x_ptr,
+                             <uint8_t*> d_temp_mem, <double*> d_grad,
                              <double> h, <bool> trans, ll_method,
                              <int> truncate)
 

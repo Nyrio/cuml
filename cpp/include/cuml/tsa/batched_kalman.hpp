@@ -18,8 +18,11 @@
 
 #include <cuml/tsa/arima_common.h>
 #include <cuml/cuml.hpp>
+#include <cuml/tsa/arima_memory.hpp>
 
 namespace ML {
+
+/// TODO: add managed memory to the documentation
 
 /**
  * An ARIMA specialized batched kalman filter to evaluate ARMA parameters and
@@ -42,7 +45,8 @@ namespace ML {
 void batched_kalman_filter(cumlHandle& handle, const double* d_ys_b, int nobs,
                            const ARIMAParams<double>& params,
                            const ARIMAOrder& order, int batch_size,
-                           double* d_loglike, double* d_vs, int fc_steps = 0,
+                           ARIMAMemory<double>& arima_memory, double* d_loglike,
+                           double* d_vs, int fc_steps = 0,
                            double* d_fc = nullptr);
 
 /**

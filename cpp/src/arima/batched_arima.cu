@@ -25,11 +25,11 @@
 #include <thrust/iterator/counting_iterator.h>
 
 #include <cuml/cuml.hpp>
+#include <cuml/tsa/arima_memory.hpp>
 #include <cuml/tsa/batched_arima.hpp>
 #include <cuml/tsa/batched_kalman.hpp>
 
 #include <common/cudart_utils.h>
-#include "arima_memory.cuh"
 #include "common/cumlHandle.hpp"
 #include "common/device_buffer.hpp"
 #include "common/nvtx.hpp"
@@ -54,7 +54,8 @@ void batched_diff(cumlHandle& handle, double* d_y_diff, const double* d_y,
 
 void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
              int start, int end, const ARIMAOrder& order,
-             const ARIMAParams<double>& params, double* d_vs, double* d_y_p) {
+             const ARIMAParams<double>& params, uint8_t* d_temp_mem,
+             double* d_vs, double* d_y_p) {
   ML::PUSH_RANGE(__func__);
   auto allocator = handle.getDeviceAllocator();
   const auto stream = handle.getStream();
@@ -82,8 +83,8 @@ void predict(cumlHandle& handle, const double* d_y, int batch_size, int n_obs,
   std::vector<double> loglike = std::vector<double>(batch_size);
   /// TODO: use device loglike to avoid useless copy ; part of #2233
   batched_loglike(handle, d_y_prep, batch_size, n_obs - diff_obs,
-                  order_after_prep, params, loglike.data(), d_vs, false, true,
-                  MLE, 0, num_steps, d_y_fc);
+                  order_after_prep, params, d_temp_mem, loglike.data(), d_vs,
+                  false, true, MLE, 0, num_steps, d_y_fc);
 
   auto counting = thrust::make_counting_iterator(0);
   int predict_ld = end - start;
@@ -262,11 +263,13 @@ void conditional_sum_of_squares(cumlHandle& handle, const double* d_y,
 
 void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
                      int n_obs, const ARIMAOrder& order,
-                     const ARIMAParams<double>& params, double* loglike,
-                     double* d_vs, bool trans, bool host_loglike,
-                     LoglikeMethod method, int truncate, int fc_steps,
-                     double* d_fc) {
+                     const ARIMAParams<double>& params, uint8_t* d_temp_mem,
+                     double* loglike, double* d_vs, bool trans,
+                     bool host_loglike, LoglikeMethod method, int truncate,
+                     int fc_steps, double* d_fc) {
   ML::PUSH_RANGE(__func__);
+
+  ARIMAMemory<double> arima_memory(d_temp_mem, order, n_obs, batch_size);
 
   auto allocator = handle.getDeviceAllocator();
   auto stream = handle.getStream();
@@ -305,7 +308,7 @@ void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
                                  d_loglike, truncate);
     } else {
       batched_kalman_filter(handle, d_y, n_obs, Tparams, order, batch_size,
-                            d_loglike, d_vs, fc_steps, d_fc);
+                            arima_memory, d_loglike, d_vs, fc_steps, d_fc);
     }
   } else {
     MLCommon::device_buffer<double> y_prep(
@@ -321,8 +324,8 @@ void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
                                  d_loglike, truncate);
     } else {
       batched_kalman_filter(handle, d_y_prep, n_obs - order.lost_in_diff(),
-                            Tparams, order, batch_size, d_loglike, d_vs,
-                            fc_steps, d_fc);
+                            Tparams, order, batch_size, arima_memory, d_loglike,
+                            d_vs, fc_steps, d_fc);
     }
   }
 
@@ -339,9 +342,9 @@ void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
 
 void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
                      int n_obs, const ARIMAOrder& order, const double* d_params,
-                     double* loglike, double* d_vs, bool trans,
-                     bool host_loglike, LoglikeMethod method, int truncate,
-                     int fc_steps, double* d_fc) {
+                     uint8_t* d_temp_mem, double* loglike, double* d_vs,
+                     bool trans, bool host_loglike, LoglikeMethod method,
+                     int truncate, int fc_steps, double* d_fc) {
   ML::PUSH_RANGE(__func__);
 
   // unpack parameters
@@ -351,8 +354,9 @@ void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
   params.allocate(order, batch_size, allocator, stream, false);
   params.unpack(order, batch_size, d_params, stream);
 
-  batched_loglike(handle, d_y, batch_size, n_obs, order, params, loglike, d_vs,
-                  trans, host_loglike, method, truncate, fc_steps, d_fc);
+  batched_loglike(handle, d_y, batch_size, n_obs, order, params, d_temp_mem,
+                  loglike, d_vs, trans, host_loglike, method, truncate,
+                  fc_steps, d_fc);
 
   params.deallocate(order, batch_size, allocator, stream, false);
   ML::POP_RANGE();
@@ -360,8 +364,8 @@ void batched_loglike(cumlHandle& handle, const double* d_y, int batch_size,
 
 void batched_loglike_grad(cumlHandle& handle, const double* d_y, int batch_size,
                           int n_obs, const ARIMAOrder& order, const double* d_x,
-                          double* d_grad, double h, bool trans,
-                          LoglikeMethod method, int truncate) {
+                          uint8_t* d_temp_mem, double* d_grad, double h,
+                          bool trans, LoglikeMethod method, int truncate) {
   ML::PUSH_RANGE(__func__);
   auto allocator = handle.getDeviceAllocator();
   auto stream = handle.getStream();
@@ -389,8 +393,8 @@ void batched_loglike_grad(cumlHandle& handle, const double* d_y, int batch_size,
                      });
 
     // Evaluate the log-likelihood with the positive perturbation
-    batched_loglike(handle, d_y, batch_size, n_obs, order, d_x_pert, d_ll_pos,
-                    res.data(), trans, false, method, truncate);
+    batched_loglike(handle, d_y, batch_size, n_obs, order, d_x_pert, d_temp_mem,
+                    d_ll_pos, res.data(), trans, false, method, truncate);
 
     // Subtract the perturbation to the i-th parameter
     thrust::for_each(thrust::cuda::par.on(stream), counting,
@@ -399,8 +403,8 @@ void batched_loglike_grad(cumlHandle& handle, const double* d_y, int batch_size,
                      });
 
     // Evaluate the log-likelihood with the negative perturbation
-    batched_loglike(handle, d_y, batch_size, n_obs, order, d_x_pert, d_ll_neg,
-                    res.data(), trans, false, method, truncate);
+    batched_loglike(handle, d_y, batch_size, n_obs, order, d_x_pert, d_temp_mem,
+                    d_ll_neg, res.data(), trans, false, method, truncate);
 
     // First derivative with a second-order accuracy
     thrust::for_each(thrust::cuda::par.on(stream), counting,
@@ -420,8 +424,8 @@ void batched_loglike_grad(cumlHandle& handle, const double* d_y, int batch_size,
 
 void information_criterion(cumlHandle& handle, const double* d_y,
                            int batch_size, int n_obs, const ARIMAOrder& order,
-                           const ARIMAParams<double>& params, double* d_ic,
-                           int ic_type) {
+                           const ARIMAParams<double>& params,
+                           uint8_t* d_temp_mem, double* d_ic, int ic_type) {
   ML::PUSH_RANGE(__func__);
   auto allocator = handle.getDeviceAllocator();
   auto stream = handle.getStream();
@@ -429,8 +433,8 @@ void information_criterion(cumlHandle& handle, const double* d_y,
     sizeof(double) * (n_obs - order.lost_in_diff()) * batch_size, stream);
 
   /* Compute log-likelihood in d_ic */
-  batched_loglike(handle, d_y, batch_size, n_obs, order, params, d_ic, d_vs,
-                  false, false);
+  batched_loglike(handle, d_y, batch_size, n_obs, order, params, d_temp_mem,
+                  d_ic, d_vs, false, false);
 
   /* Compute information criterion from log-likelihood and base term */
   MLCommon::Metrics::Batched::information_criterion(

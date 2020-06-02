@@ -66,8 +66,8 @@ class ArimaLoglikelihood : public TsFixtureRandom<DataT> {
     this->loopOnState(state, [this]() {
       // Evaluate log-likelihood
       batched_loglike(*this->handle, this->data.X, this->params.batch_size,
-                      this->params.n_obs, order, param, loglike, residual, true,
-                      false);
+                      this->params.n_obs, order, param, temp_mem, loglike,
+                      residual, true, false);
     });
   }
 
@@ -89,6 +89,11 @@ class ArimaLoglikelihood : public TsFixtureRandom<DataT> {
       this->params.batch_size * (this->params.n_obs - order.lost_in_diff()) *
         sizeof(DataT),
       stream);
+
+    // Buffer for the device memory used by ARIMA
+    temp_mem_size =
+      arima_memory_needed(order, this->params.n_obs, this->params.batch_size);
+    temp_mem = (uint8_t*)allocator->allocate(temp_mem_size, stream);
   }
 
   void deallocateBuffers(const ::benchmark::State& state) {
@@ -108,6 +113,7 @@ class ArimaLoglikelihood : public TsFixtureRandom<DataT> {
                             (this->params.n_obs - order.lost_in_diff()) *
                             sizeof(DataT),
                           stream);
+    allocator->deallocate(temp_mem, temp_mem_size, stream);
   }
 
  protected:
@@ -115,6 +121,8 @@ class ArimaLoglikelihood : public TsFixtureRandom<DataT> {
   DataT* param;
   DataT* loglike;
   DataT* residual;
+  int temp_mem_size;
+  uint8_t* temp_mem;
 };
 
 std::vector<ArimaParams> getInputs() {
