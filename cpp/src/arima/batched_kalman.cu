@@ -25,6 +25,7 @@
 #include <cuml/tsa/batched_kalman.hpp>
 
 #include <common/cudart_utils.h>
+#include <linalg/unary_op.cuh>
 #include "common/cumlHandle.hpp"
 #include "common/nvtx.hpp"
 #include "cuda_utils.cuh"
@@ -459,6 +460,68 @@ void batched_kalman_loglike(const double* d_vs, const double* d_Fs,
   CUDA_CHECK(cudaGetLastError());
 }
 
+/**
+ * @todo: refactor this proof-of-concept
+ */
+void economic_lyapunov_poc(const MLCommon::LinAlg::Batched::Matrix<double>& T,
+                           MLCommon::LinAlg::Batched::Matrix<double>& RRT,
+                           MLCommon::LinAlg::Batched::Matrix<double>& P,
+                           ARIMAMemory<double>& arima_memory) {
+  int r = T.shape().first;
+  int r2 = r * r;
+  int batch_size = T.batches();
+  auto stream = T.stream();
+  auto counting = thrust::make_counting_iterator(0);
+
+  // It's faster to compute Tx(-T) than -(TxT)
+  MLCommon::LinAlg::Batched::Matrix<double> mT(
+    r, r, batch_size, arima_memory.tmp_r2, arima_memory.tmp_r2_members,
+    T.cublasHandle(), T.allocator(), stream, false);
+  MLCommon::LinAlg::unaryOp(
+    mT.raw_data(), T.raw_data(), r2 * batch_size,
+    [] __device__(double a) { return -a; }, stream);
+
+  MLCommon::LinAlg::Batched::Matrix<double> I_m_TxT(
+    r2, r2, batch_size, arima_memory.tmp_r4, arima_memory.tmp_r4_members,
+    T.cublasHandle(), T.allocator(), stream, false);
+  dim3 threads(min(r, 32), min(r, 32));
+  MLCommon::LinAlg::Batched::kronecker_product_kernel<double>
+    <<<batch_size, threads, 0, stream>>>(T.raw_data(), r, r, mT.raw_data(), r,
+                                         r, I_m_TxT.raw_data(), r2, r2);
+  CUDA_CHECK(cudaPeekAtLastError());
+
+  double* d_I_m_TxT = I_m_TxT.raw_data();
+  /// TODO: apparently this loop is inefficient, maybe try 1 block/member?
+  thrust::for_each(thrust::cuda::par.on(stream), counting,
+                   counting + batch_size, [=] __device__(int ib) {
+                     double* b_I_m_TxT = d_I_m_TxT + ib * r2 * r2;
+                     for (int i = 0; i < r2; i++) {
+                       b_I_m_TxT[(r2 + 1) * i] += 1.0;
+                     }
+                   });
+
+  MLCommon::LinAlg::Batched::Matrix<double> I_m_TxT_inv(
+    r2, r2, batch_size, arima_memory.tmp_r4_bis,
+    arima_memory.tmp_r4_bis_members, T.cublasHandle(), T.allocator(), stream,
+    false);
+
+  int* perm = arima_memory.perm;
+  int* info = arima_memory.info;
+
+  CUBLAS_CHECK(MLCommon::LinAlg::cublasgetrfBatched(
+    T.cublasHandle(), r2, I_m_TxT.data(), r2, perm, info, batch_size, stream));
+  CUBLAS_CHECK(MLCommon::LinAlg::cublasgetriBatched(
+    T.cublasHandle(), r2, I_m_TxT.data(), r2, perm, I_m_TxT_inv.data(), r2,
+    info, batch_size, stream));
+
+  P.reshape(r2, 1);
+  RRT.reshape(r2, 1);
+  MLCommon::LinAlg::Batched::b_gemm(false, false, r2, 1, r2, 1.0, I_m_TxT_inv,
+                                    RRT, 0.0, P);
+  P.reshape(r, r);
+  RRT.reshape(r, r);
+}
+
 /// Internal Kalman filter implementation that assumes data exists on GPU.
 void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
                             const MLCommon::LinAlg::Batched::Matrix<double>& Zb,
@@ -497,8 +560,15 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
 
   // Durbin Koopman "Time Series Analysis" pg 138
   ML::PUSH_RANGE("Init P");
-  MLCommon::LinAlg::Batched::Matrix<double> P =
-    MLCommon::LinAlg::Batched::b_lyapunov(Tb, RRT);
+  MLCommon::LinAlg::Batched::Matrix<double> P(
+    r, r, batch_size, arima_memory.P, arima_memory.P_members, cublasHandle,
+    allocator, stream, false);
+  if (r <= 4 || (r <= 6 && batch_size <= 96)) {
+    economic_lyapunov_poc(Tb, RRT, P, arima_memory);
+  } else {
+    /// TODO: refactor to avoid copy!
+    P = MLCommon::LinAlg::Batched::b_lyapunov(Tb, RRT);
+  }
   ML::POP_RANGE();
 
   // Initialize the state alpha as the solution of (I - T) x = c
