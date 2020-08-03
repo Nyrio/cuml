@@ -697,6 +697,19 @@ Matrix<T> b_solve(const Matrix<T>& A, const Matrix<T>& b) {
 }
 
 /**
+ * @brief Solve Ax = b for given batched matrix A and batched vector b
+ * 
+ * @param[in]  A  Batched matrix A
+ * @param[in]  b  Batched vector b
+ * @param[out] x  A\b
+ */
+template <typename T>
+void b_solve(const Matrix<T>& A, const Matrix<T>& b, Matrix<T>& x) {
+  int n = A.shape().first;
+  b_gemm(false, false, n, 1, n, (T)1, A.inv(), b, (T)0, x);
+}
+
+/**
  * @brief The batched kroneker product A (x) B for given batched matrix A
  *        and batched matrix B
  * 
@@ -1697,10 +1710,10 @@ Matrix<T> b_trsyl_uplo(const Matrix<T>& R, const Matrix<T>& S,
  *
  * @param[in]  A       Batched matrix A
  * @param[in]  Q       Batched matrix Q
- * @return             Batched matrix X solving the Lyapunov equation
+ * @param[out] X       Batched matrix X solving the Lyapunov equation
  */
 template <typename T>
-Matrix<T> b_lyapunov(const Matrix<T>& A, Matrix<T>& Q) {
+void b_lyapunov(const Matrix<T>& A, Matrix<T>& Q, Matrix<T>& X) {
   int batch_size = A.batches();
   auto stream = A.stream();
   auto allocator = A.allocator();
@@ -1722,10 +1735,10 @@ Matrix<T> b_lyapunov(const Matrix<T>& A, Matrix<T>& Q) {
                        }
                      });
     Q.reshape(n2, 1);
-    Matrix<T> X = b_solve(I_m_AxA, Q);
+    X.reshape(n2, 1);
+    b_solve(I_m_AxA, Q, X);
     Q.reshape(n, n);
     X.reshape(n, n);
-    return X;
   } else {
     //
     // Transform to Sylvester equation (Popov, 1964)
@@ -1772,9 +1785,7 @@ Matrix<T> b_lyapunov(const Matrix<T>& A, Matrix<T>& Q) {
     Matrix<T> Y = b_trsyl_uplo(R, R.transpose(), F);
 
     // 4. X = UYU'
-    Matrix<T> X = b_gemm(U, b_gemm(Y, U, false, true));
-
-    return X;
+    b_gemm(false, false, n, n, n, (T)1, U, b_gemm(Y, U, false, true), (T)0, X);
   }
 }
 

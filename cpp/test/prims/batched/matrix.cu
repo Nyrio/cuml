@@ -295,7 +295,9 @@ class MatrixTest : public ::testing::TestWithParam<MatrixInputs<T>> {
         break;
       }
       case Lyapunov_op: {
-        Matrix<T> XbM = b_lyapunov(AbM, BbM);
+        Matrix<T> XbM(params.m, params.m, params.batch_size, handle, allocator,
+                      stream, false);
+        b_lyapunov(AbM, BbM, XbM);
 
         // Write AXA'-X in the result (will be compared against -B)
         *res_bM = AbM * b_gemm(XbM, AbM, false, true) - XbM;

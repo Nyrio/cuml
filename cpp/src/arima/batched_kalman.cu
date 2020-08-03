@@ -32,6 +32,7 @@
 #include <cuda_utils.cuh>
 #include <linalg/batched/matrix.cuh>
 #include <linalg/binary_op.cuh>
+#include <matrix/matrix.cuh>
 #include <sparse/batched/csr.cuh>
 #include <timeSeries/arima_helpers.cuh>
 
@@ -104,7 +105,7 @@ DI void MM_l(const double* A, const double* B, double* out) {
 template <int rd>
 __global__ void batched_kalman_loop_kernel(
   const double* ys, int nobs, const double* T, const double* Z,
-  const double* RQR, const double* P, const double* alpha, bool intercept,
+  const double* RQR, double* P, const double* alpha, bool intercept,
   const double* d_mu, int batch_size, double* vs, double* Fs, double* sum_logFs,
   int n_diff, int fc_steps = 0, double* d_fc = nullptr, bool conf_int = false,
   double* d_F_fc = nullptr) {
@@ -168,6 +169,7 @@ __global__ void batched_kalman_loop_kernel(
         }
       }
       b_Fs[it] = _Fs;
+      if (bid == 0) printf("%f\n", _Fs);
       if (it >= n_diff) b_sum_logFs += log(_Fs);
 
       // 3. K = 1/Fs[it] * T*P*Z'
@@ -701,11 +703,15 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
   // Durbin Koopman "Time Series Analysis" pg 138
   ML::PUSH_RANGE("Init P");
   MLCommon::LinAlg::Batched::Matrix<double> P(rd, rd, batch_size, cublasHandle,
-                                              allocator, stream, true);
+                                              allocator, stream, false);
   {
     double* d_P = P.raw_data();
 
     if (n_diff > 0) {
+      // Fill the matrix with zeros
+      CUDA_CHECK(
+        cudaMemsetAsync(d_P, 0, sizeof(double) * rd * rd * batch_size, stream));
+
       // Initialize the diffuse part with a large variance
       /// TODO: pass this as a parameter
       constexpr double kappa = 1e6;
@@ -718,18 +724,17 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
                        });
 
       // Initialize the stationary part by solving a Lyapunov equation
-      /// TODO: reduce amount of memory copies
+      MLCommon::LinAlg::Batched::Matrix<double> Ps(
+        r, r, batch_size, cublasHandle, allocator, stream, false);
       MLCommon::LinAlg::Batched::Matrix<double> Ts =
         MLCommon::LinAlg::Batched::b_2dcopy(Tb, n_diff, n_diff, r, r);
       MLCommon::LinAlg::Batched::Matrix<double> RQRs =
         MLCommon::LinAlg::Batched::b_2dcopy(RQR, n_diff, n_diff, r, r);
-      MLCommon::LinAlg::Batched::Matrix<double> Ps =
-        MLCommon::LinAlg::Batched::b_lyapunov(Ts, RQRs);
+      MLCommon::LinAlg::Batched::b_lyapunov(Ts, RQRs, Ps);
       MLCommon::LinAlg::Batched::b_2dcopy(Ps, P, 0, 0, r, r, n_diff, n_diff);
     } else {
       // Initialize by solving a Lyapunov equation
-      /// TODO: avoid copy
-      P = MLCommon::LinAlg::Batched::b_lyapunov(Tb, RQR);
+      MLCommon::LinAlg::Batched::b_lyapunov(Tb, RQR, P);
     }
   }
   ML::POP_RANGE();
@@ -798,9 +803,26 @@ void _batched_kalman_filter(cumlHandle& handle, const double* d_ys, int nobs,
 
   MLCommon::device_buffer<double> sumLogF_buffer(allocator, stream, batch_size);
 
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  // std::cout << "P" << std::endl;
+  // MLCommon::Matrix::print(P.raw_data(), rd, rd, ',');
+  // std::cout << "T" << std::endl;
+  // MLCommon::Matrix::print(Tb.raw_data(), rd, rd, ',');
+  // std::cout << "RQR'" << std::endl;
+  // MLCommon::Matrix::print(RQR.raw_data(), rd, rd, ',');
+  // std::cout << "alpha" << std::endl;
+  // MLCommon::Matrix::print(alpha.raw_data(), 1, rd, ',');
+  // std::cout << "Z" << std::endl;
+  // MLCommon::Matrix::print(alpha.raw_data(), 1, rd, ',');
+
   batched_kalman_loop(handle, d_ys, nobs, Tb, Zb, RQR, P, alpha, T_mask,
                       intercept, d_mu, order, d_vs, d_Fs, sumLogF_buffer.data(),
                       fc_steps, d_fc, level > 0, d_lower);
+
+  // std::cout << "F" << std::endl;
+  // MLCommon::Matrix::print(d_Fs, 1, nobs, ',');
+  // std::cout << "v" << std::endl;
+  // MLCommon::Matrix::print(d_vs, 1, nobs, ',');
 
   // Finalize loglikelihood and prediction intervals
   MLCommon::device_buffer<double> sigma2_buffer(allocator, stream, batch_size);
