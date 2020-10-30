@@ -301,6 +301,9 @@ TEST_P(WeakCCTest, Result) {
   int row_ind_ptr_h2[5] = {3, 4, 3, 4, 5};
   int verify_h2[6] = {1, 1, 1, 5, 5, 5};
 
+  /// TODO: this test case is so confusing, why would anyone do
+  /// batches 0 1 2 and 4 5 6 instead of 0 1 2 and 3 4 5 ??
+
   raft::allocate(row_ind, 3);
   raft::allocate(row_ind_ptr, 9);
   raft::allocate(result, 9, true);
@@ -346,7 +349,70 @@ TEST_P(WeakCCTest, Result) {
   CUDA_CHECK(cudaFree(result));
 }
 
+typedef CSRTest<float> WeakCCEdgeCase;
+TEST_P(WeakCCEdgeCase, Result) {
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+
+  std::shared_ptr<deviceAllocator> alloc(
+    new raft::mr::device::default_allocator);
+  int *row_ind, *row_ind_ptr, *result, *verify;
+
+  int row_ind_h1[4] = {0, 2, 5, 7};
+  int row_ind_ptr_h1[8] = {0, 4, 1, 2, 7, 1, 2, 3};
+  int verify_h1[8] = {1, 2, 2, 4, 1, 2147483647, 2147483647, 2};
+
+  int row_ind_h2[4] = {0, 3, 4, 5};
+  int row_ind_ptr_h2[8] = {0, 4, 7, 5, 6, 1, 4, 7};
+  int verify_h2[8] = {1, 1, 1, 4, 1, 6, 7, 1};
+
+  raft::allocate(row_ind, 4);
+  raft::allocate(row_ind_ptr, 8);
+  raft::allocate(result, 8, true);
+  raft::allocate(verify, 8);
+
+  device_buffer<bool> xa(alloc, stream, 8);
+  device_buffer<bool> fa(alloc, stream, 8);
+  device_buffer<bool> m(alloc, stream, 1);
+  WeakCCState state(xa.data(), fa.data(), m.data());
+
+  /**
+     * Run batch #1
+     */
+  raft::update_device(row_ind, *&row_ind_h1, 4, stream);
+  raft::update_device(row_ind_ptr, *&row_ind_ptr_h1, 8, stream);
+  raft::update_device(verify, *&verify_h1, 8, stream);
+
+  weak_cc_batched<int, 32>(result, row_ind, row_ind_ptr, 8, 8, 0, 4, &state,
+                           stream);
+
+  cudaStreamSynchronize(stream);
+  ASSERT_TRUE(raft::devArrMatch<int>(verify, result, 8, raft::Compare<int>()));
+
+  /**
+     * Run batch #2
+     */
+  raft::update_device(row_ind, *&row_ind_h2, 4, stream);
+  raft::update_device(row_ind_ptr, *&row_ind_ptr_h2, 8, stream);
+  raft::update_device(verify, *&verify_h2, 8, stream);
+
+  weak_cc_batched<int, 32>(result, row_ind, row_ind_ptr, 8, 8, 4, 4, &state,
+                           stream);
+
+  ASSERT_TRUE(raft::devArrMatch<int>(verify, result, 8, raft::Compare<int>()));
+
+  cudaStreamSynchronize(stream);
+
+  cudaStreamDestroy(stream);
+
+  CUDA_CHECK(cudaFree(row_ind));
+  CUDA_CHECK(cudaFree(row_ind_ptr));
+  CUDA_CHECK(cudaFree(verify));
+  CUDA_CHECK(cudaFree(result));
+}
+
 INSTANTIATE_TEST_CASE_P(CSRTests, WeakCCTest, ::testing::ValuesIn(inputsf));
+INSTANTIATE_TEST_CASE_P(CSRTests, WeakCCEdgeCase, ::testing::ValuesIn(inputsf));
 
 INSTANTIATE_TEST_CASE_P(CSRTests, AdjGraphTest, ::testing::ValuesIn(inputsf));
 
