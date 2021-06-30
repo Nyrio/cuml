@@ -289,13 +289,14 @@ union KalmanLoopSharedMemory {
  * @param[in]  n_obs       Number of observation per series
  * @param[in]  d_T         Batched transition matrix.            (r x r)
  * @param[in]  d_Z         Batched "design" vector               (1 x r)
- * @param[in]  d_RQR       Batched R*Q*R'                        (r x r)
+ * @param[in]  d_R         Batched R                             (r x 1)
  * @param[in]  d_P         Batched P                             (r x r)
  * @param[in]  d_alpha     Batched state vector                  (r x 1)
  * @param[in]  d_m_tmp     Batched temporary matrix              (r x r)
  * @param[in]  d_TP        Batched temporary matrix to store TP  (r x r)
  * @param[in]  intercept   Do we fit an intercept?
  * @param[in]  d_mu        Batched intercept                     (1)
+ * @param[in]  d_sigma2    Batched variance parameter            (1)
  * @param[in]  rd          State vector dimension
  * @param[out] d_vs        Batched residuals                     (nobs)
  * @param[out] d_Fs        Batched variance of prediction errors (nobs)
@@ -309,10 +310,11 @@ union KalmanLoopSharedMemory {
 template <typename GemmPolicy, typename GemvPolicy>
 __global__ void _batched_kalman_device_loop_large_kernel(
   const double* d_ys, int batch_size, int n_obs, const double* d_T,
-  const double* d_Z, const double* d_RQR, double* d_P, double* d_alpha,
-  double* d_m_tmp, double* d_TP, bool intercept, const double* d_mu, int rd,
-  double* d_vs, double* d_Fs, double* d_sum_logFs, int n_diff, int fc_steps,
-  double* d_fc, bool conf_int, double* d_F_fc) {
+  const double* d_Z, const double* d_R, double* d_P, double* d_alpha,
+  double* d_m_tmp, double* d_TP, bool intercept, const double* d_mu,
+  const double* d_sigma2, int rd, double* d_vs, double* d_Fs,
+  double* d_sum_logFs, int n_diff, int fc_steps, double* d_fc, bool conf_int,
+  double* d_F_fc) {
   int rd2 = rd * rd;
 
   // Dynamic shared memory allocation
@@ -321,20 +323,23 @@ __global__ void _batched_kalman_device_loop_large_kernel(
   double* shared_Z = (double*)(dyna_shared_mem + rd * sizeof(double));
   double* shared_alpha = (double*)(dyna_shared_mem + 2 * rd * sizeof(double));
   double* shared_K = (double*)(dyna_shared_mem + 3 * rd * sizeof(double));
+  double* shared_R = (double*)(dyna_shared_mem + 4 * rd * sizeof(double));
 
   __shared__ KalmanLoopSharedMemory<GemmPolicy, GemvPolicy, double> shared_mem;
 
   for (int bid = blockIdx.x; bid < batch_size; bid += gridDim.x) {
-    /* Load Z and alpha to shared memory */
+    /* Load Z, alpha and R to shared memory */
     for (int i = threadIdx.x; i < rd; i += GemmPolicy::BlockSize) {
       shared_Z[i] = d_Z[bid * rd + i];
       shared_alpha[i] = d_alpha[bid * rd + i];
+      shared_R[i] = d_R[bid * rd + i];
     }
 
     __syncthreads();  // ensure alpha and Z are loaded before 1.
 
     /* Initialization */
     double mu_ = intercept ? d_mu[bid] : 0.0;
+    double sigma2 = d_sigma2[bid];
     double sum_logFs = 0.0;
 
     /* Kalman loop */
@@ -411,9 +416,14 @@ __global__ void _batched_kalman_device_loop_large_kernel(
         d_P + bid * rd2, shared_mem.gemm_storage);
       __syncthreads();  // For consistency of P
       // P = P + R*Q*R'
-      /// TODO: shared mem R instead of precomputed matrix?
-      for (int i = threadIdx.x; i < rd2; i += GemmPolicy::BlockSize) {
-        d_P[bid * rd2 + i] += d_RQR[bid * rd2 + i];
+      for (int idx = threadIdx.x; idx < rd2; idx += GemmPolicy::BlockSize) {
+        int i = idx % rd;
+        int j = idx / rd;
+        // d_P[bid * rd2 + idx] += sigma2 * (shared_R[i] * shared_R[j]);
+        d_P[bid * rd2 + idx] += shared_R[i] * sigma2 * shared_R[j];
+        // double diff = abs(sigma2 * (shared_R[i] * shared_R[j]) -
+        //                   shared_R[i] * sigma2 * shared_R[j]);
+        // if (diff > 1e-10) __trap();
       }
 
       __syncthreads();  // necessary to reuse shared memory
@@ -470,9 +480,10 @@ __global__ void _batched_kalman_device_loop_large_kernel(
         d_P + bid * rd2, shared_mem.gemm_storage);
       __syncthreads();  // for consistency of P
       // P = P + R*Q*R'
-      /// TODO: shared mem R instead of precomputed matrix?
-      for (int i = threadIdx.x; i < rd2; i += GemmPolicy::BlockSize) {
-        d_P[bid * rd2 + i] += d_RQR[bid * rd2 + i];
+      for (int idx = threadIdx.x; idx < rd2; idx += GemmPolicy::BlockSize) {
+        int i = idx % rd;
+        int j = idx / rd;
+        d_P[bid * rd2 + idx] += shared_R[i] * sigma2 * shared_R[j];
       }
     }
 
@@ -489,11 +500,12 @@ __global__ void _batched_kalman_device_loop_large_kernel(
  * @param[in]  nobs         Number of observation per series
  * @param[in]  T            Batched transition matrix.            (r x r)
  * @param[in]  Z            Batched "design" vector               (1 x r)
- * @param[in]  RQR          Batched R*Q*R'                        (r x r)
+ * @param[in]  R            Batched R                             (r x 1)
  * @param[in]  P            Batched P                             (r x r)
  * @param[in]  alpha        Batched state vector                  (r x 1)
  * @param[in]  intercept    Do we fit an intercept?
  * @param[in]  d_mu         Batched intercept                     (1)
+ * @param[in]  d_sigma2     Batched variance parameter            (1)
  * @param[in]  rd           Dimension of the state vector
  * @param[out] d_vs         Batched residuals                     (nobs)
  * @param[out] d_Fs         Batched variance of prediction errors (nobs)    
@@ -509,12 +521,12 @@ void _batched_kalman_device_loop_large(
   const ARIMAMemory<double>& arima_mem, const double* d_ys, int n_obs,
   const MLCommon::LinAlg::Batched::Matrix<double>& T,
   const MLCommon::LinAlg::Batched::Matrix<double>& Z,
-  const MLCommon::LinAlg::Batched::Matrix<double>& RQR,
+  const MLCommon::LinAlg::Batched::Matrix<double>& R,
   MLCommon::LinAlg::Batched::Matrix<double>& P,
   MLCommon::LinAlg::Batched::Matrix<double>& alpha, bool intercept,
-  const double* d_mu, int rd, double* d_vs, double* d_Fs, double* d_sum_logFs,
-  int n_diff, int fc_steps = 0, double* d_fc = nullptr, bool conf_int = false,
-  double* d_F_fc = nullptr) {
+  const double* d_mu, const double* d_sigma2, int rd, double* d_vs,
+  double* d_Fs, double* d_sum_logFs, int n_diff, int fc_steps = 0,
+  double* d_fc = nullptr, bool conf_int = false, double* d_F_fc = nullptr) {
   static_assert(GemmPolicy::BlockSize == GemvPolicy::BlockSize,
                 "Gemm and gemv policies: block size mismatch");
 
@@ -532,13 +544,13 @@ void _batched_kalman_device_loop_large(
     allocator, stream, false);
 
   int grid_size = std::min(batch_size, 65536);
-  size_t shared_mem_size = 4 * rd * sizeof(double);
+  size_t shared_mem_size = 5 * rd * sizeof(double);
   _batched_kalman_device_loop_large_kernel<GemmPolicy, GemvPolicy>
     <<<grid_size, GemmPolicy::BlockSize, shared_mem_size, stream>>>(
-      d_ys, batch_size, n_obs, T.raw_data(), Z.raw_data(), RQR.raw_data(),
+      d_ys, batch_size, n_obs, T.raw_data(), Z.raw_data(), R.raw_data(),
       P.raw_data(), alpha.raw_data(), m_tmp.raw_data(), TP.raw_data(),
-      intercept, d_mu, rd, d_vs, d_Fs, d_sum_logFs, n_diff, fc_steps, d_fc,
-      conf_int, d_F_fc);
+      intercept, d_mu, d_sigma2, rd, d_vs, d_Fs, d_sum_logFs, n_diff, fc_steps,
+      d_fc, conf_int, d_F_fc);
 }
 
 /// Wrapper around functions that execute the Kalman loop (for performance)
@@ -547,14 +559,15 @@ void batched_kalman_loop(raft::handle_t& handle,
                          int nobs,
                          const MLCommon::LinAlg::Batched::Matrix<double>& T,
                          const MLCommon::LinAlg::Batched::Matrix<double>& Z,
+                         const MLCommon::LinAlg::Batched::Matrix<double>& R,
                          const MLCommon::LinAlg::Batched::Matrix<double>& RQR,
                          MLCommon::LinAlg::Batched::Matrix<double>& P0,
                          MLCommon::LinAlg::Batched::Matrix<double>& alpha,
                          bool intercept, const double* d_mu,
-                         const ARIMAOrder& order, double* vs, double* Fs,
-                         double* sum_logFs, int fc_steps = 0,
-                         double* d_fc = nullptr, bool conf_int = false,
-                         double* d_F_fc = nullptr) {
+                         const double* d_sigma2, const ARIMAOrder& order,
+                         double* vs, double* Fs, double* sum_logFs,
+                         int fc_steps = 0, double* d_fc = nullptr,
+                         bool conf_int = false, double* d_F_fc = nullptr) {
   const int batch_size = T.batches();
   auto stream = T.stream();
   int rd = order.rd();
@@ -630,15 +643,15 @@ void batched_kalman_loop(raft::handle_t& handle,
           MLCommon::LinAlg::BlockGemmPolicy<1, 16, 1, 1, 16, 16>;
         using GemvPolicy = MLCommon::LinAlg::BlockGemvPolicy<16, 16>;
         _batched_kalman_device_loop_large<GemmPolicy, GemvPolicy>(
-          arima_mem, ys, nobs, T, Z, RQR, P0, alpha, intercept, d_mu, rd, vs,
-          Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
+          arima_mem, ys, nobs, T, Z, R, P0, alpha, intercept, d_mu, d_sigma2,
+          rd, vs, Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
       } else {
         using GemmPolicy =
           MLCommon::LinAlg::BlockGemmPolicy<1, 16, 1, 4, 16, 4>;
         using GemvPolicy = MLCommon::LinAlg::BlockGemvPolicy<16, 4>;
         _batched_kalman_device_loop_large<GemmPolicy, GemvPolicy>(
-          arima_mem, ys, nobs, T, Z, RQR, P0, alpha, intercept, d_mu, rd, vs,
-          Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
+          arima_mem, ys, nobs, T, Z, R, P0, alpha, intercept, d_mu, d_sigma2,
+          rd, vs, Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
       }
     } else if (rd <= 32) {
       if (batch_size <= 2 * num_sm) {
@@ -646,29 +659,29 @@ void batched_kalman_loop(raft::handle_t& handle,
           MLCommon::LinAlg::BlockGemmPolicy<1, 32, 1, 4, 32, 8>;
         using GemvPolicy = MLCommon::LinAlg::BlockGemvPolicy<32, 8>;
         _batched_kalman_device_loop_large<GemmPolicy, GemvPolicy>(
-          arima_mem, ys, nobs, T, Z, RQR, P0, alpha, intercept, d_mu, rd, vs,
-          Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
+          arima_mem, ys, nobs, T, Z, R, P0, alpha, intercept, d_mu, d_sigma2,
+          rd, vs, Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
       } else {
         using GemmPolicy =
           MLCommon::LinAlg::BlockGemmPolicy<1, 32, 1, 8, 32, 4>;
         using GemvPolicy = MLCommon::LinAlg::BlockGemvPolicy<32, 4>;
         _batched_kalman_device_loop_large<GemmPolicy, GemvPolicy>(
-          arima_mem, ys, nobs, T, Z, RQR, P0, alpha, intercept, d_mu, rd, vs,
-          Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
+          arima_mem, ys, nobs, T, Z, R, P0, alpha, intercept, d_mu, d_sigma2,
+          rd, vs, Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
       }
     } else if (rd > 64 && rd <= 128) {
       using GemmPolicy =
         MLCommon::LinAlg::BlockGemmPolicy<1, 16, 1, 16, 128, 2>;
       using GemvPolicy = MLCommon::LinAlg::BlockGemvPolicy<128, 2>;
       _batched_kalman_device_loop_large<GemmPolicy, GemvPolicy>(
-        arima_mem, ys, nobs, T, Z, RQR, P0, alpha, intercept, d_mu, rd, vs, Fs,
-        sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
+        arima_mem, ys, nobs, T, Z, R, P0, alpha, intercept, d_mu, d_sigma2, rd,
+        vs, Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
     } else {
       using GemmPolicy = MLCommon::LinAlg::BlockGemmPolicy<1, 32, 1, 16, 64, 4>;
       using GemvPolicy = MLCommon::LinAlg::BlockGemvPolicy<64, 4>;
       _batched_kalman_device_loop_large<GemmPolicy, GemvPolicy>(
-        arima_mem, ys, nobs, T, Z, RQR, P0, alpha, intercept, d_mu, rd, vs, Fs,
-        sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
+        arima_mem, ys, nobs, T, Z, R, P0, alpha, intercept, d_mu, d_sigma2, rd,
+        vs, Fs, sum_logFs, n_diff, fc_steps, d_fc, conf_int, d_F_fc);
     }
   }
 }
@@ -761,6 +774,35 @@ void _lyapunov_wrapper(raft::handle_t& handle,
   }
 }
 
+__global__ void RQR_kernel(const double* d_R, const double* d_sigma2,
+                           double* d_RQR, int batch_size, int rd) {
+  extern __shared__ char dyna_shared_mem[];
+  double* shared_R = (double*)dyna_shared_mem;
+
+  int rd2 = rd * rd;
+
+  for (int bid = blockIdx.x; bid < batch_size; bid += gridDim.x) {
+    /* Sync threads in case this is not the first iteration of the loop for this block */
+    if (bid > gridDim.x) __syncthreads();
+
+    /* Load R to shared mem */
+    for (int i = threadIdx.x; i < rd; i++) {
+      shared_R[i] = d_R[bid * rd + i];
+    }
+    __syncthreads();
+
+    /* Read sigma2 */
+    double sigma2 = d_sigma2[bid];
+
+    /* Compute RQR' */
+    for (int idx = threadIdx.x; idx < rd2; idx += blockDim.x) {
+      int i = idx % rd;
+      int j = idx / rd;
+      d_RQR[bid * rd2 + idx] = shared_R[i] * sigma2 * shared_R[j];
+    }
+  }
+}
+
 /// Internal Kalman filter implementation that assumes data exists on GPU.
 void _batched_kalman_filter(raft::handle_t& handle,
                             const ARIMAMemory<double>& arima_mem,
@@ -773,7 +815,7 @@ void _batched_kalman_filter(raft::handle_t& handle,
                             const double* d_sigma2, bool intercept,
                             const double* d_mu, int fc_steps, double* d_fc,
                             double level, double* d_lower, double* d_upper) {
-  const size_t batch_size = Zb.batches();
+  const int batch_size = Zb.batches();
   auto stream = handle.get_stream();
   auto cublasHandle = handle.get_cublas_handle();
   auto allocator = handle.get_device_allocator();
@@ -784,23 +826,25 @@ void _batched_kalman_filter(raft::handle_t& handle,
   int rd = order.rd();
   int r = order.r();
 
-  MLCommon::LinAlg::Batched::Matrix<double> RQb(
-    rd, 1, batch_size, cublasHandle, arima_mem.RQ_batches, arima_mem.RQ_dense,
-    allocator, stream, true);
-  double* d_RQ = RQb.raw_data();
-  const double* d_R = Rb.raw_data();
-  thrust::for_each(thrust::cuda::par.on(stream), counting,
-                   counting + batch_size, [=] __device__(int bid) {
-                     double sigma2 = d_sigma2[bid];
-                     for (int i = 0; i < rd; i++) {
-                       d_RQ[bid * rd + i] = d_R[bid * rd + i] * sigma2;
-                     }
-                   });
+  // MLCommon::LinAlg::Batched::Matrix<double> RQb(
+  //   rd, 1, batch_size, cublasHandle, arima_mem.RQ_batches, arima_mem.RQ_dense,
+  //   allocator, stream, true);
+  // double* d_RQ = RQb.raw_data();
+  // const double* d_R = Rb.raw_data();
+  // thrust::for_each(thrust::cuda::par.on(stream), counting,
+  //                  counting + batch_size, [=] __device__(int bid) {
+  //                    double sigma2 = d_sigma2[bid];
+  //                    for (int i = 0; i < rd; i++) {
+  //                      d_RQ[bid * rd + i] = d_R[bid * rd + i] * sigma2;
+  //                    }
+  //                  });
   MLCommon::LinAlg::Batched::Matrix<double> RQR(
     rd, rd, batch_size, cublasHandle, arima_mem.RQR_batches,
     arima_mem.RQR_dense, allocator, stream, false);
-  MLCommon::LinAlg::Batched::b_gemm(false, true, rd, rd, 1, 1.0, RQb, Rb, 0.0,
-                                    RQR);
+  RQR_kernel<<<std::min(batch_size, 65536), 256, rd * sizeof(double), stream>>>(
+    Rb.raw_data(), d_sigma2, RQR.raw_data(), batch_size, rd);
+  // MLCommon::LinAlg::Batched::b_gemm(false, true, rd, rd, 1, 1.0, RQb, Rb, 0.0,
+  //                                   RQR);
 
   // Durbin Koopman "Time Series Analysis" pg 138
   ML::PUSH_RANGE("Init P");
@@ -913,8 +957,8 @@ void _batched_kalman_filter(raft::handle_t& handle,
                                sizeof(double) * rd * batch_size, stream));
   }
 
-  batched_kalman_loop(handle, arima_mem, d_ys, nobs, Tb, Zb, RQR, P, alpha,
-                      intercept, d_mu, order, d_vs, d_Fs,
+  batched_kalman_loop(handle, arima_mem, d_ys, nobs, Tb, Zb, Rb, RQR, P, alpha,
+                      intercept, d_mu, d_sigma2, order, d_vs, d_Fs,
                       arima_mem.sumLogF_buffer, fc_steps, d_fc, level > 0,
                       d_lower);
 
